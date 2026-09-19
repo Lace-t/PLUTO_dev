@@ -191,7 +191,14 @@ enum KWAVES {
   #define PCP_STAGE_LIMITING NO
 #endif
 
-#if (PCP_NR == YES)
+#ifndef PCP_STAGE_LOCAL_PASSES
+#define PCP_STAGE_LOCAL_PASSES 2
+#endif
+#if PCP_STAGE_LOCAL_PASSES < 1 || PCP_STAGE_LOCAL_PASSES > 16
+#error "PCP_STAGE_LOCAL_PASSES must be in [1,16]"
+#endif
+
+#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
 	#ifndef RMHD_FAILSAFE_PCP_CHECK
 	  /* Check RK cell averages before C2P can repair them.
 	     Independent of PCP_NR and of the optional stage blending wrapper. */
@@ -204,7 +211,7 @@ enum KWAVES {
      the hard D/energy/q checks but failing the full PCP check. YES rejects
      every failed PCP check; cold production restarts may require a more
      substantial change of the spatial update to run in this mode. */
-  #define RMHD_FAILSAFE_PCP_STRICT NO
+  #define RMHD_FAILSAFE_PCP_STRICT PCP_STAGE_LIMITING
 #endif
 #ifndef RMHD_FAILSAFE_LOCAL_PASSES
   /* Accumulate newly discovered bad regions at fixed dt before reducing it. */
@@ -277,7 +284,12 @@ extern int g_pcp_low_order;
  * and first-order edge-EMF reconstruction. */
 extern int g_rmhd_failsafe_low_order;
 void RMHD_FailSafe_StageStates (const Sweep *, int, int);
-int RMHD_PCP_UpdateStage (Data *, double, timeStep *, Grid *);
+void RMHD_LocalFallbackFlag(Data *, uint16_t ***);
+void RMHD_PCP_BeginStage(Data *, timeStep *);
+int RMHD_PCP_RetryStage(Data *, timeStep *);
+void RMHD_PCP_EndStage(Data *);
+int RMHD_PCP_CheckConservative(const double *);
+int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr, Data_Arr, uint16_t ***, RBox *, Grid *);
 int RMHD_PCP_CheckStage (Data *, Grid *);
 void RMHD_PCP_StageStates (const Sweep *, int, int);
 

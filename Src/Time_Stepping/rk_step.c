@@ -156,10 +156,10 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 /* CheckData (d, grid, "Before Predictor"); */
   #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
-  if (RMHD_PCP_UpdateStage(d, g_dt, Dts, grid)) return 1;
-  #else
-  UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
+  RMHD_PCP_BeginStage(d,Dts);
+  do {
   #endif
+  UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
 
   /* -- Update irradiation flux (RHD/RMHD) -- */
   #if RADIATION
@@ -186,13 +186,24 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 #ifdef STAGGERED_MHD
   CT_AverageStaggeredFields (d, 1, &box, grid);
 #endif
+
+#if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  err = RMHD_PCP_CheckStage(d,grid);
+  if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
+  } while (err && RMHD_PCP_RetryStage(d,Dts));
+  if (err) return err;
+  RMHD_PCP_EndStage(d);
+#else
+
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
-  if (RMHD_PCP_CheckStage(d, grid)) return 1;
+    if (RMHD_PCP_CheckStage(d, grid)) return 1;
   #endif
-  err = ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
+    err = ConsToPrim3D(d->Uc,d->Vc,d->flag,&box,grid);
+  
   #if FAILSAFE == YES
-  if (err > 0) return err;
+    if (err > 0) return err;
   #endif
+#endif
 
 /* -- 1e. Advance particles (w/ feedback) by a full step -- */
 
@@ -226,10 +237,10 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   Particles_LP_Update (d, Dts, g_dt, grid);
   #endif
   #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
-  if (RMHD_PCP_UpdateStage(d, g_dt, Dts, grid)) return 1;
-  #else
-  UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
+  RMHD_PCP_BeginStage(d,Dts);
+  do {
   #endif
+  UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
 
   /* -- Update irradiation flux (RHD/RMHD) -- */
   #if RADIATION
@@ -272,12 +283,20 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 /* -- 2f. Convert to Primitive -- */
 
+  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  err = RMHD_PCP_CheckStage(d,grid);
+  if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
+  } while (err && RMHD_PCP_RetryStage(d,Dts));
+  if (err) return err;
+  RMHD_PCP_EndStage(d);
+  #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
   if (RMHD_PCP_CheckStage(d, grid)) return 1;
   #endif
-  err = ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
+  err = ConsToPrim3D(d->Uc,d->Vc,d->flag,&box,grid);
   #if FAILSAFE == YES
   if (err > 0) return err;
+  #endif
   #endif
 
 #endif  /* TIME_STEPPING == RK2/RK3 */
@@ -304,10 +323,10 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   Particles_LP_Update (d, Dts, g_dt, grid);
   #endif
   #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
-  if (RMHD_PCP_UpdateStage(d, g_dt, Dts, grid)) return 1;
-  #else
-  UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
+  RMHD_PCP_BeginStage(d,Dts);
+  do {
   #endif
+  UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
 
   /* -- Update irradiation flux (RHD/RMHD) -- */
   #if RADIATION
@@ -343,12 +362,20 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   FARGO_ShiftParticles (d, grid, g_dt);
   #endif
   #endif
+  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  err = RMHD_PCP_CheckStage(d,grid);
+  if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
+  } while (err && RMHD_PCP_RetryStage(d,Dts));
+  if (err) return err;
+  RMHD_PCP_EndStage(d);
+  #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
   if (RMHD_PCP_CheckStage(d, grid)) return 1;
   #endif
-  err = ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
+  err = ConsToPrim3D(d->Uc,d->Vc,d->flag,&box,grid);
   #if FAILSAFE == YES
   if (err > 0) return err;
+  #endif
   #endif
 #endif /* TIME_STEPPING == RK3 */
 

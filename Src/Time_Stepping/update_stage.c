@@ -229,9 +229,6 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
           if ((sweep.flag[face] | sweep.flag[face+1]) & FLAG_FLAT)
             RMHD_FailSafe_StageStates (&sweep, face, face);
       }
-      #if PCP_STAGE_LIMITING == YES
-      else if (g_pcp_low_order) RMHD_PCP_StageStates (&sweep, nbeg-1, nend);
-      #endif
       #else
       States  (&sweep, nbeg - 1, nend + 1, grid);
       #endif
@@ -261,9 +258,6 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
           LF_Solver (&sweep, first, face-1, Dts->cmax, grid);
         }
       }
-      #if PCP_STAGE_LIMITING == YES
-      else if (g_pcp_low_order) LF_Solver (&sweep, nbeg-1, nend, Dts->cmax, grid);
-      #endif
       else d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
       #else
       d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);

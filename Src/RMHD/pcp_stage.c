@@ -1,14 +1,8 @@
-/* Conservative, CT-compatible a-posteriori PCP stage limiting.
- *
- * Both candidates start from the SAME FE input. A single MPI-global theta
- * blends every conservative component and every staggered face. Thus shared
- * flux/edge corrections cancel, and CT divergence is preserved to roundoff.
- * The LF+CT low-order state is CHECKED, never presumed PCP from Wu's theorem.
- * If it fails, FailSafe restores the entire step and first retries with
- * local order reduction at the original dt, then with smaller time steps.
- * See robust/PCP_NR_PLUTO_Integration.md, section 4.9.
- * Xufan Hu 2026.9
- */
+/* Local a-posteriori RK stage repair. Candidate validation runs AFTER
+ * RK averaging, CT correction and primitive recovery. Only flagged shared
+ * faces/edges use the existing LF/CT fallback; no global state blending.
+ * A failed stage is recomputed from its own entry, not from the full step.
+ * The bounded repair is not a proof of a PCP low-order anchor. */
 #include "pluto.h"
 
 int g_pcp_low_order = 0;
@@ -34,34 +28,38 @@ void RMHD_FailSafe_StageStates(const Sweep *s, int beg, int end)
   }
 }
 
+/* Shared acceptance policy for stage input and mapper-modified states. */
+int RMHD_PCP_CheckConservative(const double *u)
+{
+  int n;
+  NVAR_LOOP(n) if (!isfinite(u[n])) return 0;
+#if RMHD_FAILSAFE_PCP_STRICT == YES
+  return RMHD_PCP_Check(u);
+#else
+  if (RMHD_PCP_Check(u)) return 1;
+  double E = u[ENG];
+#if RMHD_REDUCED_ENERGY == YES
+  E += u[RHO];
+#endif
+  /* Compatibility mode defers the remaining PCP conditions to recovery. */
+  return isfinite(E) && u[RHO] > 0.0 && u[ENG] > 0.0
+      && E > hypot(u[RHO],hypot(u[MX1],hypot(u[MX2],u[MX3])));
+#endif
+}
+
 /* Check the actual RK average after its RK combination and CT averaging,
  * before the mapper can change U. No primitive recovery or state repair is
  * performed here. All ranks must make the same decision before returning
  * from AdvanceStep, since the following C2P contains MPI collectives. */
 int RMHD_PCP_CheckStage(Data *d, Grid *grid)
 {
-  int i,j,k,n, local_cells = 0, deferred_cells = 0;
+  int i,j,k, local_cells = 0, deferred_cells = 0;
   int counts[2];
   (void)grid;
   DOM_LOOP(k,j,i) {
     double *u = d->Uc[k][j][i];
-    int full_bad = !RMHD_PCP_Check(u);
-    int cell_bad = full_bad;
-#if RMHD_FAILSAFE_PCP_STRICT == NO
-    if (full_bad) {
-      double E = u[ENG];
-#if RMHD_REDUCED_ENERGY == YES
-      E += u[RHO];
-#endif
-      /* Necessary conditions with no arbitrary absolute energy floor.
-         A positive-energy state failing only the remaining full check is
-         left to the existing mapper/PressureFix policy, explicitly counted
-         below. This compatibility mode is NOT a full PCP acceptance gate. */
-      cell_bad = !isfinite(E) || u[RHO] <= 0.0 || u[ENG] <= 0.0
-              || !(E > hypot(u[RHO],hypot(u[MX1],hypot(u[MX2],u[MX3]))));
-    }
-#endif
-    NVAR_LOOP(n) if (!isfinite(u[n])) cell_bad = 1;
+    int cell_bad = !RMHD_PCP_CheckConservative(u);
+    if (d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) cell_bad = 1;
 #ifdef STAGGERED_MHD
     /* Both faces bounding the active cell must be finite. */
     DIM_EXPAND(
@@ -78,11 +76,14 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
       if (u[RHO] <= 0.0) d->flag[k][j][i] |= FLAG_NEGATIVE_DENSITY;
       if (u[ENG] <= 0.0) d->flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;
       local_cells++;
-    } else if (full_bad) deferred_cells++;
+    }
+#if RMHD_FAILSAFE_PCP_STRICT == NO
+    else if (!RMHD_PCP_Check(u)) deferred_cells++;
+#endif
   }
-  if (local_cells) printLog("RMHD_STAGE_REJECT: step=%ld stage=%d rank=%d "
+  if (local_cells) WARNING(printLog("RMHD_STAGE_REJECT: step=%ld stage=%d rank=%d "
                    "cells=%d dt=%.4g pre_c2p=YES\n",
-                   g_stepNumber,g_intStage,prank,local_cells,g_dt);
+                   g_stepNumber,g_intStage,prank,local_cells,g_dt);)
   counts[0] = local_cells;
   counts[1] = deferred_cells;
 #ifdef PARALLEL
@@ -101,257 +102,120 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
   return counts[0] != 0;
 }
 
+
 #if PCP_STAGE_LIMITING == YES
-#if EOS != IDEAL
-#error "PCP_STAGE_LIMITING requires IDEAL EOS"
+#if EOS != IDEAL || GEOMETRY != CARTESIAN || FAILSAFE != YES \
+ || ((TIME_STEPPING != RK2) && (TIME_STEPPING != RK3))
+#error "Local PCP stages require Cartesian IDEAL RMHD, FAILSAFE and SSP RK2/RK3"
 #endif
-#if ((TIME_STEPPING != RK2) && (TIME_STEPPING != RK3))
-#error "PCP_STAGE_LIMITING requires FAILSAFE=YES and SSP RK2/RK3"
-#endif
-#if ENTROPY_SWITCH != NO || PARABOLIC_FLUX != NO \
- || FORCED_TURB != NO || INCLUDE_LES != NO || DUST_FLUID != NO \
- || RING_AVERAGE > 1
-#error "PCP_STAGE_LIMITING: this source/auxiliary update is not supported"
-#endif
-#if (UPDATE_VECTOR_POTENTIAL == YES) && !defined(STAGGERED_MHD)
-#error "PCP_STAGE_LIMITING needs staggered MHD when vector potential is updated"
+#if ENTROPY_SWITCH != NO || PARABOLIC_FLUX != NO || RADIATION != NO \
+ || PARTICLES != NO || FORCED_TURB != NO || INCLUDE_LES != NO \
+ || DUST_FLUID != NO || RING_AVERAGE > 1 || UPDATE_VECTOR_POTENTIAL == YES
+#error "Local PCP stages: rollback for these auxiliary fields is not implemented"
 #endif
 #if defined(CHOMBO) || defined(FARGO) || defined(SHEARINGBOX) || defined(HIGH_ORDER)
-#error "PCP_STAGE_LIMITING: AMR/orbital/high-order quadrature paths need separate validation"
+#error "Local PCP stages: this integration path is unsupported"
 #endif
 
-static int GlobalBad(int bad)
+static Data_Arr stage_u, stage_v, stage_b;
+static uint16_t ***stage_flags, ***stage_mask;
+static double *stage_cmax;
+static timeStep stage_dts;
+static int stage_pass, outer_mode;
+
+/* Called after Boundary/initial P2C, once per RK stage. V must be saved:
+ * CT_RMHD_CONSISTENT and the mapper can both modify it on rejected trials. */
+void RMHD_PCP_BeginStage(Data *d, timeStep *Dts)
 {
+  int i,j,k,n;
+  if (stage_u == NULL) {
+    stage_u = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
+    stage_v = ARRAY_4D(NVAR,NX3_TOT,NX2_TOT,NX1_TOT,double);
+    stage_flags = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
+    stage_mask = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
+    stage_cmax = ARRAY_1D(NMAX_POINT,double);
+#ifdef STAGGERED_MHD
+    stage_b = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
+#endif
+  }
+  stage_pass = 0;
+  outer_mode = g_rmhd_failsafe_low_order;
+  stage_dts = *Dts;
+  memcpy(stage_cmax,Dts->cmax,NMAX_POINT*sizeof(double));
+  TOT_LOOP(k,j,i) {
+    stage_flags[k][j][i] = d->flag[k][j][i];
+    stage_mask[k][j][i] = 0;
+  }
+  for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+    memcpy(stage_u[k][j][0],d->Uc[k][j][0],NX1_TOT*NVAR*sizeof(double));
+  NVAR_LOOP(n) for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+    memcpy(stage_v[n][k][j],d->Vc[n][k][j],NX1_TOT*sizeof(double));
+#ifdef STAGGERED_MHD
+  DIM_LOOP(n) TOT_LOOP(k,j,i) stage_b[n][k][j][i] = d->Vs[n][k][j][i];
+#endif
+}
+
+/* Every rank calls this after a collective stage rejection. Return one
+ * only when all ranks have restored the same stage and will retry it.
+ * Seeds are exchanged before dilation, final masks after restoration. */
+int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
+{
+  int i,j,k,n;
+  long local[2]={0,0}, total[2];
+  DOM_LOOP(k,j,i) local[0] += !!(d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL);
 #ifdef PARALLEL
-  int all;
-  MPI_Allreduce(&bad, &all, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  return all;
+  MPI_Allreduce(local,total,2,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
 #else
-  return bad;
+  memcpy(total,local,sizeof total);
 #endif
-}
-
-static int PhysicalPrimitive(const double *v)
-{
-  int n;
-  double v2 = 0.0;
-  NVAR_LOOP(n) if (!isfinite(v[n])) return 0;
-  for (n = VX1; n <= VX3; n++) v2 += v[n]*v[n];
-  return v[RHO] > 0.0 && v[PRS] > 0.0 && v2 < 1.0;
-}
-
-/* CandidateBad() is called before the global reduction.  Dump the local
- * evidence first; an MPI abort can otherwise erase the only rank that saw
- * the non-finite or non-admissible cell.  Files are deliberately rank-local
- * and bounded so this remains usable on the production-sized mesh. */
-static void PCPDumpBadCells (Data *d, Grid *grid, const char *phase)
-{
-  char fname[256];
-  FILE *fp;
-  int i, j, k, n, nbad = 0, truncated = 0;
-
-  snprintf(fname, sizeof(fname),
-           "pcp_bad_cells_%s_step%08ld_stage%02d_rank%04d.dat",
-           phase, g_stepNumber, g_intStage, prank);
-  fp = fopen(fname, "w");
-  if (fp == NULL) return;
-  fprintf(fp, "# rank=%d step=%ld stage=%d time=%.4g dt=%.4g phase=%s\n",
-          prank, g_stepNumber, g_intStage, g_time, g_dt, phase);
-  fprintf(fp, "# columns: i j k x1 x2 x3 flags v2 "
-              "U[rho mx1 mx2 mx3 bx1 bx2 bx3 eng] "
-              "V[rho vx1 vx2 vx3 bx1 by1 bz1 prs]"
-#ifdef STAGGERED_MHD
-              " Bface[x1 x2 x3]"
-#endif
-              "\n");
-
-  DOM_LOOP(k,j,i) {
-    double v2 = 0.0;
-    int bad = (d->flag[k][j][i] &
-               (FLAG_CONS2PRIM_FAIL | FLAG_NEGATIVE_PRESSURE |
-                FLAG_NEGATIVE_ENERGY | FLAG_NEGATIVE_DENSITY |
-                FLAG_PRESSURE_FIX_FAIL | FLAG_PCP_LIMIT_FAIL |
-                FLAG_PCP_NR_FAIL)) != 0 ||
-              !isfinite(d->Uc[k][j][i][RHO]) ||
-              !isfinite(d->Uc[k][j][i][ENG]) ||
-              d->Uc[k][j][i][RHO] <= 0.0 ||
-              d->Uc[k][j][i][ENG] <= 0.0;
-    NVAR_LOOP(n) {
-      if (!isfinite(d->Uc[k][j][i][n]) ||
-          !isfinite(d->Vc[n][k][j][i])) bad = 1;
-    }
-    for (n = VX1; n <= VX3; n++) v2 += d->Vc[n][k][j][i]*d->Vc[n][k][j][i];
-    if (!(d->Vc[RHO][k][j][i] > 0.0) ||
-        !(d->Vc[PRS][k][j][i] > 0.0) || !(v2 < 1.0)) bad = 1;
-#ifdef STAGGERED_MHD
-    DIM_LOOP(n) if (!isfinite(d->Vs[n][k][j][i])) bad = 1;
-#endif
-    if (!bad) continue;
-    if (nbad >= 1024) { truncated = 1; continue; }
-    fprintf(fp, "%d %d %d %.4g %.4g %.4g 0x%04x %.4g",
-            i, j, k, grid->x[IDIR][i], grid->x[JDIR][j], grid->x[KDIR][k],
-            (unsigned)d->flag[k][j][i], v2);
-    for (n = RHO; n <= ENG; n++) fprintf(fp, " %.4g", d->Uc[k][j][i][n]);
-    for (n = RHO; n <= PRS; n++) fprintf(fp, " %.4g", d->Vc[n][k][j][i]);
-#ifdef STAGGERED_MHD
-    DIM_LOOP(n) fprintf(fp, " %.4g", d->Vs[n][k][j][i]);
-#endif
-    fputc('\n', fp);
-    nbad++;
+  if (stage_pass == PCP_STAGE_LOCAL_PASSES || total[0] == 0) {
+    /* Retain all observed seeds for the outer full-step fallback, while
+     * leaving rejected U/V/B intact for its diagnostics. */
+    TOT_LOOP(k,j,i) if (stage_mask[k][j][i]&FLAG_HLL)
+      d->flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
+    WARNING(printLog("PCP_STAGE exhausted: step=%ld stage=%d passes=%d bad=%ld\n",
+             g_stepNumber,g_intStage,stage_pass,total[0]);)
+    g_rmhd_failsafe_low_order = outer_mode;
+    return 0;
   }
-  fprintf(fp, "# bad_cells=%d%s\n", nbad,
-          truncated ? " (truncated at 1024)" : "");
-  fflush(fp);
-  fclose(fp);
-}
-
-/* This is ordinary first-order reconstruction, NOT a fabricated safe state.
- * A bad high-order face is downgraded before the Riemann solver can see it.
- * This retains the original interface limiter and extends its failure path
- * only in the opt-in stage-limited mode. */
-void RMHD_PCP_StageStates(const Sweep *s, int beg, int end)
-{
-  int i, n;
-
-  /* UpdateStage calls this with [nbeg-1,nend], the complete interface
-   * range consumed by the Riemann solver.  PLUTO stores stateR[i] as the
-   * left state of cell i+1, hence stateC[i+1] is required at the final
-   * interface.  stateL/stateR also receive the normal staggered field for
-   * the current sweep direction (BX1, BX2, or BX3 via BXn). */
-  if (end < beg) return;
-  for (i = beg; i <= end; i++) {
-    if (g_pcp_low_order || (g_rmhd_failsafe_low_order &&
-        ((s->flag[i] | s->flag[i+1]) & FLAG_FLAT))
-        || !RMHD_PCP_Check(s->stateL.u[i])
-        || !RMHD_PCP_Check(s->stateR.u[i])
-        || !PhysicalPrimitive(s->stateL.v[i])
-        || !PhysicalPrimitive(s->stateR.v[i])) {
-      RMHD_FailSafe_StageStates(s, i, i);
-    }
-  }
-}
-
-static int CandidateBad(Data *d, int mark, Grid *grid, const char *phase)
-{
-  int i,j,k,n, bad = 0;
-  DOM_LOOP(k,j,i) {
-    double *u = d->Uc[k][j][i];
-    int cell_bad = !isfinite(u[RHO]) || !isfinite(u[ENG])
-                || u[RHO] <= 0.0 || u[ENG] <= 0.0;
-    NVAR_LOOP(n) if (!isfinite(u[n])) cell_bad = 1;
-    if (cell_bad) {
-      bad = 1;
-      if (mark) d->flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
-    }
-  }
-  /* All stored faces are blended when staggered MHD is active. */
+  RMHD_LocalFallbackFlag(d,stage_mask);
+  *Dts = stage_dts;
+  memcpy(Dts->cmax,stage_cmax,NMAX_POINT*sizeof(double));
+  for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+    memcpy(d->Uc[k][j][0],stage_u[k][j][0],NX1_TOT*NVAR*sizeof(double));
+  NVAR_LOOP(n) for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+    memcpy(d->Vc[n][k][j],stage_v[n][k][j],NX1_TOT*sizeof(double));
 #ifdef STAGGERED_MHD
-  DIM_LOOP(n) TOT_LOOP(k,j,i) if (!isfinite(d->Vs[n][k][j][i])) bad = 1;
+  DIM_LOOP(n) TOT_LOOP(k,j,i) d->Vs[n][k][j][i] = stage_b[n][k][j][i];
 #endif
-  // if (bad) PCPDumpBadCells(d, grid, phase);
-  return GlobalBad(bad);
-}
-
-int RMHD_PCP_UpdateStage(Data *d, double dt, timeStep *Dts, Grid *grid)
-{
-  static Data_Arr input, high, low, bin, bhi, blo;
-  timeStep saved_dts = *Dts;
-  RBox box;
-  int i,j,k,n, it;
-  double theta;
-  if (input == NULL) {
-    input = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
-    high  = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
-    low   = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
-#ifdef STAGGERED_MHD
-    bin = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
-    bhi = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
-    blo = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
+  TOT_LOOP(k,j,i) d->flag[k][j][i] = stage_flags[k][j][i] | stage_mask[k][j][i];
+#ifdef PARALLEL
+  AL_Exchange(d->flag[0][0],SZ_uint16_t);
 #endif
-  }
-  RBoxDefine(IBEG,IEND,JBEG,JEND,KBEG,KEND,CENTER,&box);
-  if (CandidateBad(d, 1, grid, "input")) return 1;
-  /* Input primitive and ghost states must be usable before any flux call. */
-  {
-    int bad = !(g_gamma > 1.0 && g_gamma <= 2.0);
-    double v[NVAR];
-    TOT_LOOP(k,j,i) {
-      NVAR_LOOP(n) v[n] = d->Vc[n][k][j][i];
-      if (!PhysicalPrimitive(v)) bad = 1;
-    }
-    if (GlobalBad(bad)) {
-      // PCPDumpBadCells(d, grid, "input_primitive");
-      return 1;
-    }
-  }
-  TOT_LOOP(k,j,i) NVAR_LOOP(n) input[k][j][i][n] = d->Uc[k][j][i][n];
-#ifdef STAGGERED_MHD
-  DIM_LOOP(n) TOT_LOOP(k,j,i) bin[n][k][j][i] = d->Vs[n][k][j][i];
+  local[1]=0;
+  DOM_LOOP(k,j,i) local[1] += !!(d->flag[k][j][i]&FLAG_FLAT);
+#ifdef PARALLEL
+  MPI_Allreduce(local,total,2,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
+#else
+  memcpy(total,local,sizeof total);
 #endif
-
-  UpdateStage(d, d->Uc, d->Vs, NULL, dt, Dts, grid);
-#ifdef STAGGERED_MHD
-  CT_AverageStaggeredFields(d, 0, &box, grid);
-#endif
-  if (!CandidateBad(d, 0, grid, "high")) return 0; /* no low-order work on a good stage */
-
-
-  //more works begin here: 
-  //1. low-order candidate, 2. global halving sequence, 3. collective recheck
-
-  TOT_LOOP(k,j,i) NVAR_LOOP(n) {
-    high[k][j][i][n] = d->Uc[k][j][i][n];
-    d->Uc[k][j][i][n] = input[k][j][i][n];
-  }
-#ifdef STAGGERED_MHD
-  DIM_LOOP(n) TOT_LOOP(k,j,i) {
-    bhi[n][k][j][i] = d->Vs[n][k][j][i];
-    d->Vs[n][k][j][i] = bin[n][k][j][i];
-  }
-#endif
-  *Dts = saved_dts;
-  g_pcp_low_order = 1;
-  UpdateStage(d, d->Uc, d->Vs, NULL, dt, Dts, grid);
-  g_pcp_low_order = 0;
-#ifdef STAGGERED_MHD
-  CT_AverageStaggeredFields(d, 0, &box, grid);
-#endif
-  if (CandidateBad(d, 1, grid, "low")) {
-    printLog("PCP_STAGE reject: low-order candidate, stage=%d dt=%.4g\n",g_intStage,dt);
-    /* FailSafe owns the full-step backup, including primitives and flags. */
-    return 1;
-  }
-  TOT_LOOP(k,j,i) NVAR_LOOP(n) low[k][j][i][n] = d->Uc[k][j][i][n];
-#ifdef STAGGERED_MHD
-  DIM_LOOP(n) TOT_LOOP(k,j,i) blo[n][k][j][i] = d->Vs[n][k][j][i];
-#endif
-
-  /* Fixed GLOBAL halving sequence + collective recheck. No assumption that
-   * the state-dependent floating-point margin checker defines a convex set.
-   * theta=0 is copied exactly: 0*NaN must never poison the valid anchor. */
-  for (it=1; it<=2; it++) {
-    theta = ldexp(1.0,-it);
-    DOM_LOOP(k,j,i) NVAR_LOOP(n) {
-      d->Uc[k][j][i][n] = theta == 0.0 ? low[k][j][i][n]
-        : (1.0-theta)*low[k][j][i][n] + theta*high[k][j][i][n];
-    }
-#ifdef STAGGERED_MHD
-    DIM_LOOP(n) TOT_LOOP(k,j,i) {
-      d->Vs[n][k][j][i] = theta == 0.0 ? blo[n][k][j][i]
-        : (1.0-theta)*blo[n][k][j][i] + theta*bhi[n][k][j][i];
-    }
-#endif
-#ifdef STAGGERED_MHD
-    CT_AverageStaggeredFields(d, 0, &box, grid);
-#endif
-    if (!CandidateBad(d, 0, grid, "blend")) {
-      printLog("PCP_STAGE limited: stage=%d theta=%.4g\n",g_intStage,theta);
-      return 0;
-    }
-  }
-  /* Supply troubled-cell seeds to the full-step local fallback. */
-  CandidateBad(d, 1, grid, "blend_final");
+  stage_pass++;
+  g_rmhd_failsafe_low_order = 1;
+  WARNING(printLog("PCP_STAGE retry: step=%ld stage=%d pass=%d bad=%ld flat=%ld\n",
+           g_stepNumber,g_intStage,stage_pass,total[0],total[1]);)
   return 1;
 }
 
+void RMHD_PCP_EndStage(Data *d)
+{
+  int i,j,k;
+  /* Repair masks are stage-local; preserve original flags and accepted
+   * recovery diagnostics, removing only bits introduced by this repair. */
+  TOT_LOOP(k,j,i) d->flag[k][j][i] =
+    (d->flag[k][j][i] & ~stage_mask[k][j][i]) | stage_flags[k][j][i];
+  if (stage_pass)
+    WARNING(printLog("PCP_STAGE accepted: step=%ld stage=%d passes=%d\n",
+             g_stepNumber,g_intStage,stage_pass);)
+  g_rmhd_failsafe_low_order = outer_mode;
+}
 #endif

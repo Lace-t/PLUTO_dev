@@ -13,7 +13,26 @@
 #include "pluto.h"
 
 /* ********************************************************************* */
-int ConsToPrim3D (Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *grid)
+static int ConsToPrim3DImpl(Data_Arr, Data_Arr, uint16_t ***, RBox *, Grid *, int);
+
+int ConsToPrim3D(Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *grid)
+{
+  return ConsToPrim3DImpl(U,V,flag,box,grid,0);
+}
+
+#if PHYSICS == RMHD && PCP_STAGE_LIMITING == YES
+/* Caller has checked the stage input. Recheck only states changed by C2P;
+ * face fields are unchanged by this mapper and need no second check. */
+int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr U, Data_Arr V,
+                                        uint16_t ***flag, RBox *box,
+                                        Grid *grid)
+{
+  return ConsToPrim3DImpl(U,V,flag,box,grid,1);
+}
+#endif
+
+static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
+                           RBox *box, Grid *grid, int check_modified)
 /*!
  *  Convert a 3D array of conservative variables \c U to
  *  an array of primitive variables \c V.
@@ -34,6 +53,8 @@ int ConsToPrim3D (Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *gri
   int   err = 0, err_loc;
   int   ibeg, iend, jbeg, jend, kbeg, kend;
   int   current_dir;
+  int   rejected = 0;
+  (void)check_modified;
   static double **v, **u;
 
   if (v == NULL){
@@ -69,6 +90,13 @@ int ConsToPrim3D (Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *gri
     }  
     #endif
 
+    #if PHYSICS == RMHD && PCP_STAGE_LIMITING == YES
+    if (check_modified) {
+      for (i = ibeg; i <= iend; i++)
+        memcpy(u[i],U[k][j][i],NVAR*sizeof(double));
+    }
+    #endif
+
     #ifdef HIGH_ORDER
     err_loc = 0;
     for (i = ibeg; i <= iend; i++){  g_i = i;
@@ -86,6 +114,18 @@ int ConsToPrim3D (Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *gri
     err = MAX(err, err_loc);
     for (i = ibeg; i <= iend; i++) {
       NVAR_LOOP(nv) V[nv][k][j][i] = v[i][nv];
+      #if PHYSICS == RMHD && PCP_STAGE_LIMITING == YES
+      if (check_modified) {
+        if (memcmp(u[i],U[k][j][i],NVAR*sizeof(double)) != 0
+            && !RMHD_PCP_CheckConservative(U[k][j][i])) {
+          flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
+          if (U[k][j][i][RHO] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_DENSITY;
+          if (U[k][j][i][ENG] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;
+          rejected++;
+        }
+        if (flag[k][j][i] & FLAG_CONS2PRIM_FAIL) err = 1;
+      }
+      #endif
      
       /////// DEBUG
 /*      
@@ -129,6 +169,9 @@ int ConsToPrim3D (Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *gri
     
   }}
 
+  if (rejected) printLog("RMHD_STAGE_REJECT: step=%ld stage=%d rank=%d "
+                        "cells=%d dt=%.4g pre_c2p=NO\n",
+                        g_stepNumber,g_intStage,prank,rejected,g_dt);
   g_dir = current_dir;
 
   #ifdef PARALLEL

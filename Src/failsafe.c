@@ -256,7 +256,7 @@ void FailSafe (Data *d, timeStep *Dts, Grid *grid)
  * The failed cell selects HLL; radius one uses FLAT, radius two MINMOD.
  * Flags are applied to shared fluxes by the ordinary reconstruction/solver.
  */
-static void RMHDFailSafeFlag(Data *d, uint16_t ***fallback)
+void RMHD_LocalFallbackFlag(Data *d, uint16_t ***fallback)
 {
   int i,j,k,ii,jj,kk;
 #ifdef PARALLEL
@@ -347,7 +347,7 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
     //expand bad region
     g_rmhd_failsafe_low_order = (attempt > 0);
     if (attempt > 0) {
-      RMHDFailSafeFlag(d,fallback);
+      RMHD_LocalFallbackFlag(d,fallback);
       {
         long counts[2] = {0,0}, totals[2];
         DOM_LOOP(k,j,i) {
