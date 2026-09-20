@@ -28,6 +28,28 @@ void RMHD_FailSafe_StageStates(const Sweep *s, int beg, int end)
   }
 }
 
+/* Replace shared face fluxes, not cell updates. FLAG_LF is the undilated
+ * FOFC cell mask; FLAG_FLAT also supports the outer full-step fallback.
+ * Rebuild BOTH states after the ordinary solver, which may modify them
+ * (e.g. its GLM pre-solver), and refresh LF's CT flux data at the same faces. */
+void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
+                               double *cmax, Grid *grid)
+{
+  int face, first;
+  if (!g_rmhd_failsafe_low_order) return;
+  for (face = beg; face <= end; ) {
+    if (!((s->flag[face] | s->flag[face+1]) & (FLAG_FLAT | FLAG_LF))) {
+      face++;
+      continue;
+    }
+    first = face++;
+    while (face <= end &&
+           ((s->flag[face] | s->flag[face+1]) & (FLAG_FLAT | FLAG_LF))) face++;
+    RMHD_FailSafe_StageStates(s,first,face-1);
+    LF_Solver(s,first,face-1,cmax,grid);
+  }
+}
+
 /* Shared acceptance policy for stage input and mapper-modified states. */
 int RMHD_PCP_CheckConservative(const double *u)
 {
@@ -104,9 +126,9 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
 
 
 #if PCP_STAGE_LIMITING == YES
-#if EOS != IDEAL || GEOMETRY != CARTESIAN || FAILSAFE != YES \
+#if EOS != IDEAL || GEOMETRY != CARTESIAN \
  || ((TIME_STEPPING != RK2) && (TIME_STEPPING != RK3))
-#error "Local PCP stages require Cartesian IDEAL RMHD, FAILSAFE and SSP RK2/RK3"
+#error "Local PCP stages require Cartesian IDEAL RMHD and SSP RK2/RK3"
 #endif
 #if ENTROPY_SWITCH != NO || PARABOLIC_FLUX != NO || RADIATION != NO \
  || PARTICLES != NO || FORCED_TURB != NO || INCLUDE_LES != NO \
@@ -157,12 +179,20 @@ void RMHD_PCP_BeginStage(Data *d, timeStep *Dts)
 
 /* Every rank calls this after a collective stage rejection. Return one
  * only when all ranks have restored the same stage and will retry it.
- * Seeds are exchanged before dilation, final masks after restoration. */
+ * FOFC marks only failed cells: the two faces touching a marked cell in
+ * each direction get first-order LLF fluxes. Do not dilate into the
+ * FLAT/MINMOD rings used by the outer full-step failsafe. */
 int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
 {
   int i,j,k,n;
   long local[2]={0,0}, total[2];
-  DOM_LOOP(k,j,i) local[0] += !!(d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL);
+  /* Count the cumulative mask with the new seeds before restoration. Both
+   * counts share the one collective needed to decide whether to retry. */
+  DOM_LOOP(k,j,i) {
+    int bad=!!(d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL);
+    local[0] += bad;
+    local[1] += bad || (stage_mask[k][j][i]&FLAG_LF);
+  }
 #ifdef PARALLEL
   MPI_Allreduce(local,total,2,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
 #else
@@ -171,14 +201,17 @@ int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
   if (stage_pass == PCP_STAGE_LOCAL_PASSES || total[0] == 0) {
     /* Retain all observed seeds for the outer full-step fallback, while
      * leaving rejected U/V/B intact for its diagnostics. */
-    TOT_LOOP(k,j,i) if (stage_mask[k][j][i]&FLAG_HLL)
+    TOT_LOOP(k,j,i) if (stage_mask[k][j][i]&FLAG_LF)
       d->flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
     WARNING(printLog("PCP_STAGE exhausted: step=%ld stage=%d passes=%d bad=%ld\n",
              g_stepNumber,g_intStage,stage_pass,total[0]);)
     g_rmhd_failsafe_low_order = outer_mode;
     return 0;
   }
-  RMHD_LocalFallbackFlag(d,stage_mask);
+  /* No dilation: install local seeds first, then exchange the final flags
+   * once. ArrayLib's directional exchange also propagates CT edge/corners. */
+  TOT_LOOP(k,j,i) if (d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL)
+    stage_mask[k][j][i] |= FLAG_LF;
   *Dts = stage_dts;
   memcpy(Dts->cmax,stage_cmax,NMAX_POINT*sizeof(double));
   for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
@@ -191,17 +224,14 @@ int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
   TOT_LOOP(k,j,i) d->flag[k][j][i] = stage_flags[k][j][i] | stage_mask[k][j][i];
 #ifdef PARALLEL
   AL_Exchange(d->flag[0][0],SZ_uint16_t);
-#endif
-  local[1]=0;
-  DOM_LOOP(k,j,i) local[1] += !!(d->flag[k][j][i]&FLAG_FLAT);
-#ifdef PARALLEL
-  MPI_Allreduce(local,total,2,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
-#else
-  memcpy(total,local,sizeof total);
+  /* Track received ghost masks too, so EndStage removes remote seeds.
+   * Original LF flags are restored from stage_flags during cleanup. */
+  TOT_LOOP(k,j,i) stage_mask[k][j][i] |=
+    d->flag[k][j][i] & FLAG_LF & ~stage_flags[k][j][i];
 #endif
   stage_pass++;
   g_rmhd_failsafe_low_order = 1;
-  WARNING(printLog("PCP_STAGE retry: step=%ld stage=%d pass=%d bad=%ld flat=%ld\n",
+  WARNING(printLog("PCP_STAGE retry: step=%ld stage=%d pass=%d bad=%ld fofc=%ld\n",
            g_stepNumber,g_intStage,stage_pass,total[0],total[1]);)
   return 1;
 }
@@ -209,6 +239,12 @@ int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
 void RMHD_PCP_EndStage(Data *d)
 {
   int i,j,k;
+  /* No retry means no temporary mask was installed. Accepted stage checks
+   * only add diagnostic bits, so there is no full-grid cleanup to do. */
+  if (stage_pass == 0) {
+    g_rmhd_failsafe_low_order = outer_mode;
+    return;
+  }
   /* Repair masks are stage-local; preserve original flags and accepted
    * recovery diagnostics, removing only bits introduced by this repair. */
   TOT_LOOP(k,j,i) d->flag[k][j][i] =
@@ -217,5 +253,113 @@ void RMHD_PCP_EndStage(Data *d)
     WARNING(printLog("PCP_STAGE accepted: step=%ld stage=%d passes=%d\n",
              g_stepNumber,g_intStage,stage_pass);)
   g_rmhd_failsafe_low_order = outer_mode;
+}
+
+/* PressureFix may change energy and need not pass the strict PCP test at
+ * floor pressure. Require a finite, usable state instead. Before recovery,
+ * reject inputs PressureFix cannot repair without inventing density/B.
+ * Reduce on all ranks before deciding whether to enter the C2P collective. */
+static int PCPRecoveryInvalid(Data *d, int recovered)
+{
+  int i,j,k,n,err=0;
+  DOM_LOOP(k,j,i) {
+    int bad=0;
+    NVAR_LOOP(n) if (!isfinite(d->Uc[k][j][i][n])) bad=1;
+    if (d->Uc[k][j][i][RHO] <= 0.0) bad=1;
+#ifdef STAGGERED_MHD
+    DIM_EXPAND(
+      if (!isfinite(d->Vs[IDIR][k][j][i]) ||
+          !isfinite(d->Vs[IDIR][k][j][i-1])) bad=1;,
+      if (!isfinite(d->Vs[JDIR][k][j][i]) ||
+          !isfinite(d->Vs[JDIR][k][j-1][i])) bad=1;,
+      if (!isfinite(d->Vs[KDIR][k][j][i]) ||
+          !isfinite(d->Vs[KDIR][k-1][j][i])) bad=1;
+    )
+#endif
+    if (recovered) {
+      double v2=0.0;
+      NVAR_LOOP(n) if (!isfinite(d->Vc[n][k][j][i])) bad=1;
+      for (n=VX1;n<=VX3;n++) v2+=d->Vc[n][k][j][i]*d->Vc[n][k][j][i];
+      if (d->Vc[RHO][k][j][i]<=0.0 || d->Vc[PRS][k][j][i]<=0.0 ||
+          !isfinite(v2) || v2>=1.0) bad=1;
+      if (d->flag[k][j][i] & (FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL)) bad=1;
+    }
+    if (bad) {d->flag[k][j][i] |= FLAG_CONS2PRIM_FAIL; err=1;}
+  }
+#ifdef PARALLEL
+  {int local=err; MPI_Allreduce(&local,&err,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);}
+#endif
+  return err;
+}
+
+/* Common exit for every RK stage. The final FOFC candidate (not the stage
+ * snapshot) is handed to the configured recovery path after local retries
+ * are exhausted.  FAILSAFE owns the failed candidate when enabled; with
+ * FAILSAFE disabled, use the native RMHD PressureFix explicitly. */
+int RMHD_PCP_FinishStage(Data *d, int err, RBox *box, Grid *grid)
+{
+  int i,j,k;
+  (void)box;
+  (void)grid;
+  if (err) {
+#if FAILSAFE == YES
+    /* Leave the final candidate and its diagnostic flags intact.  The caller
+     * returns this error to the full-step failsafe, which owns the fallback
+     * reconstruction and retry. */
+    g_rmhd_failsafe_low_order=outer_mode;
+    return err;
+#else
+    int pressure_fix_err = 0;
+
+    /* Give the ordinary mapper its normal opportunity first.  Its recovery
+     * path invokes PressureFix and also refreshes all primitive fields. */
+    DOM_LOOP(k,j,i)
+      d->flag[k][j][i] &= ~(FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL);
+    pressure_fix_err = ConsToPrim3D(d->Uc,d->Vc,d->flag,box,grid);
+    pressure_fix_err = PCPRecoveryInvalid(d,1) || pressure_fix_err;
+    if (!pressure_fix_err) {
+      RMHD_PCP_EndStage(d);
+      return 0;
+    }
+
+    /* The ordinary mapper can reject a state before reaching its pressure
+     * fix (for example after a non-finite intermediate).  Retry the failed
+     * cells explicitly before declaring the no-failsafe build fatal. */
+    pressure_fix_err = 0;
+    DOM_LOOP(k,j,i) {
+      if ((d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) ||
+          (stage_mask[k][j][i] & FLAG_LF)) {
+        int fix_err;
+        d->flag[k][j][i] &= ~(FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL);
+        d->flag[k][j][i] |= FLAG_NEGATIVE_PRESSURE;
+        fix_err = RMHD_PressureFix(d->Uc[k][j][i], d->Vc[k][j][i]);
+        if (fix_err) {
+          d->flag[k][j][i] |= FLAG_PRESSURE_FIX_FAIL | FLAG_CONS2PRIM_FAIL;
+          pressure_fix_err = 1;
+        }
+      }
+    }
+#ifdef PARALLEL
+    {int local=pressure_fix_err;
+     MPI_Allreduce(&local,&pressure_fix_err,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);}
+#endif
+    pressure_fix_err = PCPRecoveryInvalid(d,1) || pressure_fix_err;
+    printLog("PCP_STAGE recovery: step=%ld stage=%d pressure_fix=%s\n",
+             g_stepNumber,g_intStage,pressure_fix_err ? "FAILED" : "accepted");
+    if (!pressure_fix_err) {
+      RMHD_PCP_EndStage(d);
+      return 0;
+    }
+
+    g_rmhd_failsafe_low_order=outer_mode;
+    printLog("! PCP_STAGE: PressureFix failed with FAILSAFE=NO; "
+             "step=%ld stage=%d dt=%.17g\n",g_stepNumber,g_intStage,g_dt);
+    LogFileFlush();
+    QUIT_PLUTO(1);
+    return pressure_fix_err;
+#endif
+  }
+  RMHD_PCP_EndStage(d);
+  return 0;
 }
 #endif

@@ -221,17 +221,7 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
        ---------------------------------------------------- */
       
       CheckNaN (stateC->v, 0, ntot-1, "stateC->v");
-      #if PHYSICS == RMHD
-      States (&sweep, nbeg - 1, nend + 1, grid);
-      if (g_rmhd_failsafe_low_order) {
-        int face;
-        for (face = nbeg-1; face <= nend; face++)
-          if ((sweep.flag[face] | sweep.flag[face+1]) & FLAG_FLAT)
-            RMHD_FailSafe_StageStates (&sweep, face, face);
-      }
-      #else
       States  (&sweep, nbeg - 1, nend + 1, grid);
-      #endif
 
       #if (RING_AVERAGE > 1) && (GEOMETRY == POLAR)
       if (g_dir == JDIR) RingAverageReconstruct(&sweep, nbeg-1, nend+1, grid);
@@ -243,24 +233,9 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
        2c. Solve Riemann problem
        ---------------------------------------------------- */
 
-      #if PHYSICS == RMHD
-      if (g_rmhd_failsafe_low_order) {
-        int face, first;
-        d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
-        for (face = nbeg-1; face <= nend; ) {
-          if (!((sweep.flag[face] | sweep.flag[face+1]) & FLAG_FLAT)) {
-            face++;
-            continue;
-          }
-          first = face++;
-          while (face <= nend &&
-                 ((sweep.flag[face] | sweep.flag[face+1]) & FLAG_FLAT)) face++;
-          LF_Solver (&sweep, first, face-1, Dts->cmax, grid);
-        }
-      }
-      else d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
-      #else
       d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
+      #if PHYSICS == RMHD
+      RMHD_FailSafe_CorrectFluxes (&sweep, nbeg-1, nend, Dts->cmax, grid);
       #endif
       
       #if NSCL > 0

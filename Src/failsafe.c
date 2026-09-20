@@ -322,11 +322,13 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
   TOT_LOOP(k,j,i) {
     flag0[k][j][i] = d->flag[k][j][i];
     fallback[k][j][i] = 0;
-    NVAR_LOOP(n) {
-      U0[k][j][i][n] = d->Uc[k][j][i][n];
-      V0[n][k][j][i] = d->Vc[n][k][j][i];
-    }
   }
+  /* U has contiguous cell variables; V has contiguous x rows per variable.
+   * Copy each in its native layout, including the ghost cells. */
+  for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+    memcpy(U0[k][j][0],d->Uc[k][j][0],NX1_TOT*NVAR*sizeof(double));
+  NVAR_LOOP(n) for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+    memcpy(V0[n][k][j],d->Vc[n][k][j],NX1_TOT*sizeof(double));
   memcpy(cmax0,Dts->cmax,NMAX_POINT*sizeof(double));
 #ifdef STAGGERED_MHD
   DIM_LOOP(n) TOT_LOOP(k,j,i) B0[n][k][j][i] = d->Vs[n][k][j][i];
@@ -348,20 +350,6 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
     g_rmhd_failsafe_low_order = (attempt > 0);
     if (attempt > 0) {
       RMHD_LocalFallbackFlag(d,fallback);
-      {
-        long counts[2] = {0,0}, totals[2];
-        DOM_LOOP(k,j,i) {
-          counts[0] += (fallback[k][j][i] & FLAG_FLAT) != 0;
-          counts[1]++;
-        }
-#ifdef PARALLEL
-        MPI_Allreduce(counts, totals, 2, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
-#else
-        totals[0] = counts[0]; totals[1] = counts[1];
-#endif
-        // printLog("RMHD_FAILSAFE local mask: attempt=%d halvings=%d flat_cells=%ld total_cells=%ld\n",
-        //          attempt, (attempt-1)/RMHD_FAILSAFE_LOCAL_PASSES, totals[0], totals[1]);
-      }
       g_stepNumber = n0;
       g_time = t0;
       g_intStage = stage0;
@@ -369,11 +357,11 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
       memcpy(Dts->cmax,cmax0,NMAX_POINT*sizeof(double));
       TOT_LOOP(k,j,i) {
         d->flag[k][j][i] = flag0[k][j][i] | fallback[k][j][i];
-        NVAR_LOOP(n) {
-          d->Uc[k][j][i][n] = U0[k][j][i][n];
-          d->Vc[n][k][j][i] = V0[n][k][j][i];
-        }
       }
+      for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+        memcpy(d->Uc[k][j][0],U0[k][j][0],NX1_TOT*NVAR*sizeof(double));
+      NVAR_LOOP(n) for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
+        memcpy(d->Vc[n][k][j],V0[n][k][j],NX1_TOT*sizeof(double));
 #ifdef STAGGERED_MHD
       DIM_LOOP(n) TOT_LOOP(k,j,i) d->Vs[n][k][j][i] = B0[n][k][j][i];
 #endif

@@ -100,15 +100,6 @@
 #ifndef CT_RMHD_DIAGNOSTICS
  #define CT_RMHD_DIAGNOSTICS NO
 #endif
-#if CT_RMHD_CONSISTENT == YES
- #if PHYSICS != RMHD || EOS != IDEAL || ENTROPY_SWITCH != NO || RADIATION != NO
-  #error "CT_RMHD_CONSISTENT supports ideal RMHD without entropy/radiation only"
- #endif
- #if CT_EN_CORRECTION != YES || FAILSAFE != YES
-  #error "CT_RMHD_CONSISTENT requires CT_EN_CORRECTION and FAILSAFE"
- #endif
-#endif
-
 #if PHYSICS == RMHD
 int CT_RMHD_CorrectCell(double *, double *, const double *, uint16_t *, double *);
 #endif

@@ -22,7 +22,7 @@ static void CT_FailSafeEdgeStates(double ***q, uint16_t *flag,
   int n, ntot = dir == IDIR ? NX1_TOT : (dir == JDIR ? NX2_TOT : NX3_TOT);
   if (!g_rmhd_failsafe_low_order) return;
   for (n = 1; n < ntot-2; n++) {
-    if (!((flag[n] | flag[n+1]) & FLAG_FLAT)) continue;
+    if (!((flag[n] | flag[n+1]) & (FLAG_FLAT | FLAG_LF))) continue;
     if (dir == IDIR) { left[n] = q[k][j][n]; right[n] = q[k][j][n+1]; }
     if (dir == JDIR) { left[n] = q[k][n][i]; right[n] = q[k][n+1][i]; }
     if (dir == KDIR) { left[n] = q[n][j][i]; right[n] = q[n+1][j][i]; }

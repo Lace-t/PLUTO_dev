@@ -4,7 +4,7 @@
 #include "globals.h"
 #include <assert.h>
 #include <stdarg.h>
-static int calls[4], mode, target, maps;
+static int calls[4], mode, target, maps, recoveries;
 void printLog(const char *fmt, ...) { va_list a; va_start(a,fmt); vprintf(fmt,a); va_end(a); }
 void print(const char *fmt, ...) {(void)fmt;}
 void PlutoError(int b,char *s) {if(b){puts(s);abort();}}
@@ -42,20 +42,26 @@ void UpdateStage(Data *d,Data_Arr u,Data_Arr b,double **f,double dt,timeStep *Dt
  if(g_intStage==target && pass) {
    assert(g_rmhd_failsafe_low_order);
    if(prank==0) {
-     assert(d->flag[5][5][8]&FLAG_HLL);
-     assert(d->flag[5][5][7]&FLAG_FLAT);
-     assert(!(d->flag[5][5][3]&FLAG_FLAT));
+     assert(d->flag[5][5][8]&FLAG_LF);
    }
 #ifdef PARALLEL
-   else { assert(d->flag[5][5][3]&FLAG_FLAT); assert(!(d->flag[5][5][5]&FLAG_FLAT)); }
+   else { assert(d->flag[5][5][2]&FLAG_LF); }
 #endif
+   /* One seed, no reconstruction buffer, including across the MPI face. */
+   TOT_LOOP(k,j,i) {
+     assert(!(d->flag[k][j][i]&(FLAG_FLAT|FLAG_MINMOD|FLAG_HLL)));
+     assert(!!(d->flag[k][j][i]&FLAG_LF) ==
+            (k==5 && j==5 && i==(prank==0?8:2)));
+   }
  }
  /* Restore must recover entry primitives, not failed CT or mapper output. */
  assert(d->Vc[RHO][5][5][5]==(g_intStage==1?1:2));
  DOM_LOOP(k,j,i) {u[k][j][i][RHO]+=0.01; DIM_LOOP(n)b[n][k][j][i]+=0.125;}
  Dts->cmax[0]=20; Dts->invDt_hyp=30;
- if(g_intStage==target && prank==0 && (mode==2 || pass==0)) {
+ if(g_intStage==target && prank==0 && (mode>=2 || pass==0)) {
    u[5][5][8][MX1]=100; /* D/E positive: full candidate check must reject. */
+   if(mode==6)b[IDIR][5][5][8]=NAN;
+   if(mode==7)u[5][5][8][RHO]=-100;
  }
 }
 void CT_AverageStaggeredFields(const Data *d,int correct,RBox *b,Grid *g)
@@ -64,7 +70,7 @@ void CT_AverageStaggeredFields(const Data *d,int correct,RBox *b,Grid *g)
  /* Simulate CT internal mapper touching V even on a rejected candidate. */
  d->Vc[RHO][5][5][5]=-99;
 }
-int RMHD_PCP_ConsToPrim3D(Data_Arr u,Data_Arr v,uint16_t ***flags,RBox *b,Grid *g)
+int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr u,Data_Arr v,uint16_t ***flags,RBox *b,Grid *g)
 {
  int i,j,k,n,bad=0;
  (void)u;(void)b;(void)g;
@@ -72,6 +78,29 @@ int RMHD_PCP_ConsToPrim3D(Data_Arr u,Data_Arr v,uint16_t ***flags,RBox *b,Grid *
  DOM_LOOP(k,j,i) NVAR_LOOP(n) v[n][k][j][i]=n==RHO?2:0;
  if(g_intStage==target && calls[g_intStage]==2 && mode==1 && prank==0) {
    flags[5][5][8]|=FLAG_CONS2PRIM_FAIL;bad=1;
+ }
+#ifdef PARALLEL
+ int global;MPI_Allreduce(&bad,&global,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);bad=global;
+#endif
+ return bad;
+}
+int ConsToPrim3D(Data_Arr u,Data_Arr v,uint16_t ***flags,RBox *b,Grid *g)
+{
+ int i,j,k,n,bad=0;
+ (void)b;(void)g;
+ assert(mode>=2 && mode!=6 && mode!=7);
+ assert(calls[target]==PCP_STAGE_LOCAL_PASSES+1);
+ assert(++recoveries==1);
+ DOM_LOOP(k,j,i) {
+   assert(!(flags[k][j][i]&(FLAG_CONS2PRIM_FAIL|FLAG_PRESSURE_FIX_FAIL)));
+   NVAR_LOOP(n)v[n][k][j][i]=(n==RHO?2:n==PRS?0.1:0);
+ }
+ if(prank==0) {
+   assert(u[5][5][8][MX1]>1); /* Recover the final candidate, not entry U. */
+   u[5][5][8][ENG]=200;
+   if(mode==2)bad=1; /* Error code without flags. */
+   if(mode==4)v[VX1][5][5][8]=NAN; /* Success return with unusable V. */
+   if(mode==5)flags[5][5][8]|=FLAG_PRESSURE_FIX_FAIL;
  }
 #ifdef PARALLEL
  int global;MPI_Allreduce(&bad,&global,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);bad=global;
@@ -95,12 +124,17 @@ int main(int argc,char **argv)
    DIM_LOOP(n)d.Vs[n][k][j][i]=0;d.flag[k][j][i]=0;
  }
  int err=AdvanceStep(&d,&ts,&grid);
- if(mode==2){assert(err);assert(calls[target]==PCP_STAGE_LOCAL_PASSES+1);}
+ if(mode==2 || mode>=4){
+   assert(FAILSAFE==YES); /* FAILSAFE=NO must terminate before returning. */
+   assert(err);assert(calls[target]==PCP_STAGE_LOCAL_PASSES+1);
+   assert(recoveries==(mode==6 || mode==7 ? 0:1));
+ }
  else {
-   assert(!err);assert(calls[target]==(mode==1?3:2));
+   assert(!err);assert(calls[target]==(mode==0?2:3));
+   assert(recoveries==(mode==3));
    assert(calls[target==1?2:1]==1);
    assert(fabs(d.Uc[5][5][5][RHO]-1.01)<1e-14);
-   DOM_LOOP(k,j,i)assert(!(d.flag[k][j][i]&(FLAG_FLAT|FLAG_HLL|FLAG_MINMOD|FLAG_CONS2PRIM_FAIL)));
+   DOM_LOOP(k,j,i)assert(!(d.flag[k][j][i]&(FLAG_LF|FLAG_FLAT|FLAG_HLL|FLAG_MINMOD|FLAG_CONS2PRIM_FAIL)));
  }
  assert(g_rmhd_failsafe_low_order==0);
  printf("PASS local stage integrator=%d mode=%d target=%d calls=%d,%d,%d rank=%d\n",TIME_STEPPING,mode,target,calls[1],calls[2],calls[3],prank);

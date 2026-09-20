@@ -7,7 +7,7 @@ void printLog(const char *fmt, ...) {}
 void PlutoError(int bad, char *msg) { if (bad) abort(); }
 int main(void)
 {
-  int i,j,k,dir,n;
+  int i,j,k,dir,n,mask;
   double left[10],right[10];
   uint16_t flag[10];
   double ***q;
@@ -15,9 +15,9 @@ int main(void)
   q=ARRAY_3D(10,10,10,double);
   for(k=0;k<10;k++) for(j=0;j<10;j++) for(i=0;i<10;i++)
     q[k][j][i]=100*k+10*j+i;
-  for(dir=0;dir<3;dir++) {
+  for(mask=0;mask<2;mask++) for(dir=0;dir<3;dir++) {
     for(n=0;n<10;n++) {flag[n]=0;left[n]=12345+n;right[n]=23456+n;}
-    flag[4]=FLAG_FLAT;
+    flag[4]=mask ? FLAG_LF : FLAG_FLAT;
     g_rmhd_failsafe_low_order=0;
     CT_FailSafeEdgeStates(q,flag,2,2,2,dir,left,right);
     for(n=0;n<10;n++) {assert(left[n]==12345+n);assert(right[n]==23456+n);}

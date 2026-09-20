@@ -1,5 +1,72 @@
 # RMHD FailSafe regression
 
+Communication/memory optimization: a FOFC retry now uses one Allreduce for
+both the bad-cell decision and cumulative-mask statistics, followed by one
+exchange of the final flags. Received ghost LF bits are tracked for cleanup,
+including CT edge/corner neighbours. Normal stages without retries skip the
+mask-cleanup sweep. Full-step failsafe no longer reduces unused mask counts;
+its U/V snapshots and restores copy contiguous rows in each array's native
+layout, including ghost cells. Numerical checks and retry limits are unchanged.
+
+`bash Test_Problems/RMHD/FailSafe/test_stage_exchange.sh` runs eight MPI ranks
+on a periodic 2x2x2 topology using production `AL_Exchange` with test array
+descriptors. It checks faces/edges/corners, new seeds on successive retries,
+preservation of original flags, ghost-mask cleanup, and exactly one exchange
+and one Allreduce per retry. This tests communication correctness locally;
+it is not a multi-node performance benchmark.
+
+With `PCP_STAGE_LIMITING=YES`, stage retries use FOFC face selection:
+only rejected cells receive `FLAG_LF`, with no FLAT/MINMOD buffer rings.
+The usual high-order fluxes are computed first; both states on each face
+touching a flagged cell are then replaced by stage-entry cell primitives,
+with the shared staggered normal B, and `LF_Solver` replaces that face's
+flux and CT data. CT edge reconstruction uses the same four-cell mask.
+MPI ghost flags synchronize selection on partition interfaces. Previously
+flagged cells remain marked through subsequent retries of the same stage;
+the stage mask is removed on acceptance.
+
+`PCP_STAGE_LIMITING=YES` supports both `FAILSAFE=YES` and `FAILSAFE=NO`.
+After FOFC retries are exhausted, the final candidate is passed once to
+ordinary C2P, including its native PressureFix path. Stale C2P/PressureFix
+failure flags are cleared before that attempt. A collective preflight rejects
+nonfinite conservative/face fields and nonpositive density; after recovery,
+finite U/V, positive primitive density/pressure, subluminal velocity and
+fresh recovery failure flags are checked collectively. This exit deliberately
+does not reapply the strict PCP criterion to a successful pressure-floor fix.
+PressureFix may change conservative energy. Recovery success accepts the
+stage and cleans its temporary mask. Recovery failure retains seeds for the
+outer full-step failsafe when enabled; otherwise it logs the step/stage/dt
+and terminates nonzero (MPI_Abort in parallel). An unrecovered candidate is
+never silently advanced with FAILSAFE disabled.
+`CT_RMHD_CONSISTENT` has no extra compile-time restriction. Its implementation is already scoped internally by
+`PHYSICS == RMHD` in `CT_AverageStaggeredFields()` and by the corresponding
+RMHD implementation file; defining the option for another physics has no
+effect. It has no compile-time dependency on `FAILSAFE` or
+`PCP_STAGE_LIMITING` or `CT_EN_CORRECTION`; `CT_AverageStaggeredFields()`
+still controls whether the runtime correction is applied, while the first
+two options determine what the time integrator does after a correction/C2P
+failure.
+
+This aligns the *order-reduction strategy* with `FOFC_mechanism.md`.
+Detection still uses PLUTO's existing PCP/C2P stage checks; it does not add
+AthenaK's DMP, scalar bounds, floor-test API or GR excision criteria.
+The entire stage is recomputed from its snapshot, rather than caching and
+patching sparse face fluxes. Unmarked faces retain the ordinary solver.
+
+`bash Test_Problems/RMHD/FailSafe/test_fofc_flux.sh` checks the production
+face-correction helper and LLF solver with a controlled linear physical
+flux: face locality, both constant states, shared B, CT refresh, boundary
+seeds and telescoping conservation in all three directions under ASan/UBSan.
+The local-stage and local-CT tests cover rollback, mask lifetime and edges;
+`RUN_MPI=1 bash Test_Problems/RMHD/FailSafe/test_local_stage.sh` additionally
+checks two-rank seed exchange without expanding the marked cells.
+The local-stage suite covers RK2/RK3, FAILSAFE off/on, recovery success,
+returned errors, nonfinite primitives, PressureFix failure flags, invalid
+face B/density and fatal exits. `bash Test_Problems/RMHD/FailSafe/test_stage_recovery.sh`
+also exercises real C2P and PressureFix after exhausted retries, with total
+and reduced energy and FAILSAFE off/on, checking energy repair, preserved
+density/momentum/B, flag cleanup and acceptance of the next stage.
+
 With `PHYSICS=RMHD` and `FAILSAFE=YES`, the recovery order is:
 
 1. Save the full-step fluid state and attempt the normal integration at `dt0`.
@@ -17,6 +84,10 @@ The former grid-scaled retry floor is no longer used; attempts stop early
 if the proposed dt is nonfinite, nonpositive, or cannot advance floating-point
 time. A successful smaller dt remains in `g_dt`; the existing `NextTimeStep`
 CFL and growth rules govern later steps.
+
+In the current source, diagnostic snapshot calls are commented out. The
+failsafe regression always checks rollback, exit codes and exhaustion logs;
+it validates snapshot contents only when a snapshot is present.
 
 The failed cell receives `FLAG_HLL`. Its radius-one Chebyshev neighbourhood
 receives `FLAG_FLAT`; the surrounding radius-two shell receives `FLAG_MINMOD`.

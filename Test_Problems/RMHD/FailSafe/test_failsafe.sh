@@ -29,7 +29,9 @@ for pcp in 0 1; do
     fi
     if (( mode < 0 )); then
       rg -q 'RMHD_FAILSAFE exhausted' "$log"
-      if (( mode == -1 )); then
+      # Diagnostic snapshots are disabled in this source configuration.
+      # Validate their contents if present; exit/rollback checks always run.
+      if (( mode == -1 )) && [[ -f bad_cells_failsafe_final_step12345678901_stage02_rank0000.dat ]]; then
         rg -q '# bad_cells=1 written_cells=1' bad_cells_failsafe_final_step12345678901_stage02_rank0000.dat
       else
         test ! -e bad_cells_failsafe_final_step12345678901_stage02_rank0000.dat

@@ -155,6 +155,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #endif
 
 /* CheckData (d, grid, "Before Predictor"); */
+  /* Each RK candidate is tested after combination/CT and before acceptance.
+   * On rejection, restore this stage and replace only faces adjacent to
+   * flagged cells with first-order LLF fluxes (FOFC), then test again.
+   * FinishStage handles exhausted retries through ordinary C2P/PressureFix,
+   * including the fatal exit if recovery fails with FAILSAFE disabled. */
   #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
   RMHD_PCP_BeginStage(d,Dts);
   do {
@@ -191,8 +196,8 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   err = RMHD_PCP_CheckStage(d,grid);
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
+  err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
-  RMHD_PCP_EndStage(d);
 #else
 
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
@@ -287,8 +292,8 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   err = RMHD_PCP_CheckStage(d,grid);
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
+  err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
-  RMHD_PCP_EndStage(d);
   #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
   if (RMHD_PCP_CheckStage(d, grid)) return 1;
@@ -366,8 +371,8 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   err = RMHD_PCP_CheckStage(d,grid);
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
+  err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
-  RMHD_PCP_EndStage(d);
   #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
   if (RMHD_PCP_CheckStage(d, grid)) return 1;

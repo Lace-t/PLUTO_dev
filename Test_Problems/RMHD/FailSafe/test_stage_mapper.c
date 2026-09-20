@@ -56,7 +56,7 @@ int main(int argc, char **argv)
     }
     assert(RMHD_PCP_CheckStage(&d,&grid)==0);
     g_dir=JDIR;
-    err=RMHD_PCP_ConsToPrim3D(d.Uc,d.Vc,d.flag,&box,&grid);
+    err=RMHD_PCP_ConsToPrim3D_CheckModified(d.Uc,d.Vc,d.flag,&box,&grid);
     int expected=mode>=2;
 #if RMHD_FAILSAFE_PCP_STRICT == NO
     if (mode==3) expected=0;

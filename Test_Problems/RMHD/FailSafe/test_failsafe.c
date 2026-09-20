@@ -53,8 +53,8 @@ int Integrate(Data *d, timeStep *Dts, Grid *grid)
   for (i=0; i<NMAX_POINT; i++) assert(Dts->cmax[i] == 14.0+i);
   TOT_LOOP(k,j,i) {
     NVAR_LOOP(n) {
-      assert(d->Uc[k][j][i][n] == 1.0+n);
-      assert(d->Vc[n][k][j][i] == (n >= VX1 && n <= VX3 ? 0.0 : 2.0+n));
+      assert(d->Uc[k][j][i][n] == 1.0+n+0.001*(i+12*j+144*k));
+      assert(d->Vc[n][k][j][i] == (n >= VX1 && n <= VX3 ? 0.0 : 2.0+n+0.002*(i+12*j+144*k)));
     }
     DIM_LOOP(n) assert(d->Vs[n][k][j][i] == 3.0+n);
     assert(d->Ax1[k][j][i] == 4.0 && d->Ax2[k][j][i] == 5.0);
@@ -143,8 +143,8 @@ int main(int argc, char **argv)
   dts.invDt_hyp = 12.0; dts.dt_cool = 13.0;
   TOT_LOOP(k,j,i) {
     NVAR_LOOP(n) {
-      d.Uc[k][j][i][n] = 1.0+n;
-      d.Vc[n][k][j][i] = n >= VX1 && n <= VX3 ? 0.0 : 2.0+n;
+      d.Uc[k][j][i][n] = 1.0+n+0.001*(i+12*j+144*k);
+      d.Vc[n][k][j][i] = n >= VX1 && n <= VX3 ? 0.0 : 2.0+n+0.002*(i+12*j+144*k);
     }
     DIM_LOOP(n) d.Vs[n][k][j][i] = 3.0+n;
     d.Ax1[k][j][i] = 4.0; d.Ax2[k][j][i] = 5.0; d.Ax3[k][j][i] = 6.0;

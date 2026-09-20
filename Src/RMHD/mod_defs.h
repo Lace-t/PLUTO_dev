@@ -185,6 +185,10 @@ enum KWAVES {
 #endif
 
 /* Opt-in, conservative three-dimensional a-posteriori stage limiter.
+   FOFC replaces only faces touching rejected cells with first-order LLF;
+   stage retries do not add the outer failsafe's FLAT/MINMOD buffer rings.
+   Independent of FAILSAFE: exhausted stages try ordinary C2P/PressureFix;
+   unrecoverable states return to FAILSAFE or abort when it is disabled.
    This is not an assertion that the native CT update satisfies Wu's
    a-priori LxF theorem. Unsupported physics is rejected in pcp_stage.c. */
 #ifndef PCP_STAGE_LIMITING
@@ -284,10 +288,12 @@ extern int g_pcp_low_order;
  * and first-order edge-EMF reconstruction. */
 extern int g_rmhd_failsafe_low_order;
 void RMHD_FailSafe_StageStates (const Sweep *, int, int);
+void RMHD_FailSafe_CorrectFluxes (const Sweep *, int, int, double *, Grid *);
 void RMHD_LocalFallbackFlag(Data *, uint16_t ***);
 void RMHD_PCP_BeginStage(Data *, timeStep *);
 int RMHD_PCP_RetryStage(Data *, timeStep *);
 void RMHD_PCP_EndStage(Data *);
+int RMHD_PCP_FinishStage(Data *, int, RBox *, Grid *);
 int RMHD_PCP_CheckConservative(const double *);
 int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr, Data_Arr, uint16_t ***, RBox *, Grid *);
 int RMHD_PCP_CheckStage (Data *, Grid *);
