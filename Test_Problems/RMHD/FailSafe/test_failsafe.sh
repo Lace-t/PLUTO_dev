@@ -9,7 +9,7 @@ for pcp in 0 1; do
  for retries in 0 2; do
   cc -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I"$test_src" -I"$pluto_src" -I"$pluto_src/RMHD" -I"$pluto_src/EOS/Ideal" \
-    -DRMHD_FAILSAFE_LOCAL_PASSES="$passes" -DPCP_STAGE_LIMITING="$pcp" -DRMHD_FAILSAFE_MAX_RETRIES="$retries" \
+    -DRMHD_FAILSAFE_LOCAL_PASSES="$passes" -DPCP_FOFC="$pcp" -DRMHD_FAILSAFE_MAX_RETRIES="$retries" \
     "$test_src/test_failsafe.c" "$pluto_src/failsafe.c" "$pluto_src/arrays.c" \
     -lm -o "test_${pcp}_$retries"
   modes=(0 1 -1 -2 -3)

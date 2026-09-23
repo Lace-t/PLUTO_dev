@@ -114,7 +114,7 @@ void States (const Sweep *sweep, int beg, int end, Grid *grid)
 
 #if LIMITER == FOURTH_ORDER_LIM
   FourthOrderLinear(sweep, beg, end, grid);
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
   RMHD_PCP_LimitStates(sweep, beg, end);
 #endif
   return;
@@ -338,7 +338,7 @@ void States (const Sweep *sweep, int beg, int end, Grid *grid)
   PrimToCons (vp, up, beg, end);
   PrimToCons (vm, um, beg, end);
 
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
   RMHD_PCP_LimitStates(sweep, beg, end);
 #endif
 
@@ -751,7 +751,7 @@ void States (const Sweep *sweep, int beg, int end,  Grid *grid)
   PrimToCons (vp, stateL->u, beg, end);
   PrimToCons (vm, stateR->u-1, beg, end);
 
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
   RMHD_PCP_LimitStates(sweep, beg, end);
 #endif
 }

@@ -303,7 +303,7 @@ S1 = 1.0/(b1 + 1.e-6)/(b1 + 1.e-6);
 
   PrimToCons (vp, up, beg, end);
   PrimToCons (vm, um, beg, end);
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
   RMHD_PCP_LimitStates(sweep, beg, end);
 #endif
 }

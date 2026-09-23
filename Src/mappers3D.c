@@ -20,7 +20,7 @@ int ConsToPrim3D(Data_Arr U, Data_Arr V, uint16_t ***flag, RBox *box, Grid *grid
   return ConsToPrim3DImpl(U,V,flag,box,grid,0);
 }
 
-#if PHYSICS == RMHD && PCP_STAGE_LIMITING == YES
+#if PHYSICS == RMHD && PCP_FOFC == YES
 /* Caller has checked the stage input. Recheck only states changed by C2P;
  * face fields are unchanged by this mapper and need no second check. */
 int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr U, Data_Arr V,
@@ -90,7 +90,7 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
     }  
     #endif
 
-    #if PHYSICS == RMHD && PCP_STAGE_LIMITING == YES
+    #if PHYSICS == RMHD && PCP_FOFC == YES
     if (check_modified) {
       for (i = ibeg; i <= iend; i++)
         memcpy(u[i],U[k][j][i],NVAR*sizeof(double));
@@ -114,7 +114,7 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
     err = MAX(err, err_loc);
     for (i = ibeg; i <= iend; i++) {
       NVAR_LOOP(nv) V[nv][k][j][i] = v[i][nv];
-      #if PHYSICS == RMHD && PCP_STAGE_LIMITING == YES
+      #if PHYSICS == RMHD && PCP_FOFC == YES
       if (check_modified) {
         if (memcmp(u[i],U[k][j][i],NVAR*sizeof(double)) != 0
             && !RMHD_PCP_CheckConservative(U[k][j][i])) {

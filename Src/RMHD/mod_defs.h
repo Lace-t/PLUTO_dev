@@ -191,8 +191,8 @@ enum KWAVES {
    unrecoverable states return to FAILSAFE or abort when it is disabled.
    This is not an assertion that the native CT update satisfies Wu's
    a-priori LxF theorem. Unsupported physics is rejected in pcp_stage.c. */
-#ifndef PCP_STAGE_LIMITING
-  #define PCP_STAGE_LIMITING NO
+#ifndef PCP_FOFC
+  #define PCP_FOFC NO
 #endif
 
 #ifndef PCP_STAGE_LOCAL_PASSES
@@ -202,7 +202,7 @@ enum KWAVES {
 #error "PCP_STAGE_LOCAL_PASSES must be in [1,16]"
 #endif
 
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
 	#ifndef RMHD_FAILSAFE_PCP_CHECK
 	  /* Check RK cell averages before C2P can repair them.
 	     Independent of PCP_NR and of the optional stage blending wrapper. */
@@ -215,7 +215,7 @@ enum KWAVES {
      the hard D/energy/q checks but failing the full PCP check. YES rejects
      every failed PCP check; cold production restarts may require a more
      substantial change of the spatial update to run in this mode. */
-  #define RMHD_FAILSAFE_PCP_STRICT PCP_STAGE_LIMITING
+  #define RMHD_FAILSAFE_PCP_STRICT PCP_FOFC
 #endif
 #ifndef RMHD_FAILSAFE_LOCAL_PASSES
   /* Accumulate newly discovered bad regions at fixed dt before reducing it. */
@@ -226,7 +226,7 @@ enum KWAVES {
 #endif
 #ifndef RMHD_FAILSAFE_MAX_RETRIES
   /* Number of dt halvings AFTER local mask passes at the original dt.
-     Independent of PCP_STAGE_LIMITING; zero disables dt reduction.
+     Independent of PCP_FOFC; zero disables dt reduction.
      Accept explicitly configured legacy retry counts for compatibility. */
   #ifdef PCP_STAGE_MAX_RETRIES
     #define RMHD_FAILSAFE_MAX_RETRIES PCP_STAGE_MAX_RETRIES
@@ -274,7 +274,7 @@ int  RMHD_EnergySolve  (double *, double *);
 int  RMHD_EntropySolve (double *, double *);
 int  RMHD_PressureFix  (double *, double *);
 
-/* Wu admissibility/limiter helpers also serve PCP_STAGE_LIMITING when the
+/* Wu admissibility/limiter helpers also serve PCP_FOFC when the
    optional Cai PCP-NR primitive recovery is disabled. */
 int  RMHD_PCP_Check (const double *);
 int  RMHD_PCP_Limit (const double *, double *);

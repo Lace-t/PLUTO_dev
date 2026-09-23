@@ -125,7 +125,7 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
 }
 
 
-#if PCP_STAGE_LIMITING == YES
+#if PCP_FOFC == YES
 #if EOS != IDEAL || GEOMETRY != CARTESIAN \
  || ((TIME_STEPPING != RK2) && (TIME_STEPPING != RK3))
 #error "Local PCP stages require Cartesian IDEAL RMHD and SSP RK2/RK3"

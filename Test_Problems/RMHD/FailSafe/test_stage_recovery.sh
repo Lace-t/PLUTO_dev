@@ -6,7 +6,7 @@ out=$(mktemp -d /tmp/pluto-stage-recovery.XXXXXX)
 for failsafe in 0 1; do for energy in 0 1; do
  cc -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
   -ffunction-sections -fdata-sections -Wl,--gc-sections \
-  -DPCP_STAGE_LIMITING=1 -DUPDATE_VECTOR_POTENTIAL=0 -DPCP_NR=1 \
+  -DPCP_FOFC=1 -DUPDATE_VECTOR_POTENTIAL=0 -DPCP_NR=1 \
   -DFAILSAFE="$failsafe" -DRMHD_REDUCED_ENERGY="$energy" \
   -I"$here" -I"$src" -I"$src/RMHD" -I"$src/EOS/Ideal" \
   "$here/test_stage_recovery.c" "$src/RMHD/pcp_stage.c" "$src/mappers3D.c" \

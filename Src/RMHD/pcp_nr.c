@@ -187,7 +187,7 @@ void RMHD_PCP_SetFallback (const double *u, double *v)
 
 #endif
 
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
 /* Repair a trial reconstructed state and keep its primitive/conservative
    forms synchronized.  The caller discards failed trials, leaving PLUTO's
    original reconstruction for the normal update/C2P/failsafe paths. */

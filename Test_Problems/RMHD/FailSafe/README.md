@@ -15,7 +15,7 @@ preservation of original flags, ghost-mask cleanup, and exactly one exchange
 and one Allreduce per retry. This tests communication correctness locally;
 it is not a multi-node performance benchmark.
 
-With `PCP_STAGE_LIMITING=YES`, stage retries use FOFC face selection:
+With `PCP_FOFC=YES`, stage retries use FOFC face selection:
 only rejected cells receive `FLAG_LF`, with no FLAT/MINMOD buffer rings.
 The usual high-order fluxes are computed first; both states on each face
 touching a flagged cell are then replaced by stage-entry cell primitives,
@@ -25,7 +25,7 @@ MPI ghost flags synchronize selection on partition interfaces. Previously
 flagged cells remain marked through subsequent retries of the same stage;
 the stage mask is removed on acceptance.
 
-`PCP_STAGE_LIMITING=YES` supports both `FAILSAFE=YES` and `FAILSAFE=NO`.
+`PCP_FOFC=YES` supports both `FAILSAFE=YES` and `FAILSAFE=NO`.
 After FOFC retries are exhausted, the final candidate is passed once to
 ordinary C2P, including its native PressureFix path. Stale C2P/PressureFix
 failure flags are cleared before that attempt. A collective preflight rejects
@@ -42,7 +42,7 @@ never silently advanced with FAILSAFE disabled.
 `PHYSICS == RMHD` in `CT_AverageStaggeredFields()` and by the corresponding
 RMHD implementation file; defining the option for another physics has no
 effect. It has no compile-time dependency on `FAILSAFE` or
-`PCP_STAGE_LIMITING` or `CT_EN_CORRECTION`; `CT_AverageStaggeredFields()`
+`PCP_FOFC` or `CT_EN_CORRECTION`; `CT_AverageStaggeredFields()`
 still controls whether the runtime correction is applied, while the first
 two options determine what the time integrator does after a correction/C2P
 failure.
@@ -77,7 +77,7 @@ With `PHYSICS=RMHD` and `FAILSAFE=YES`, the recovery order is:
 4. On exhaustion, write per-rank bad-cell snapshots, flush logs, and abort.
 
 `RMHD_FAILSAFE_MAX_RETRIES` controls the number of halvings, independently of
-`PCP_STAGE_LIMITING`. It defaults to 4 and accepts 0 through 30. Zero still
+`PCP_FOFC`. It defaults to 4 and accepts 0 through 30. Zero still
 allows the original-dt local fallback. An explicitly defined legacy
 `PCP_STAGE_MAX_RETRIES` supplies the default if the new option is absent.
 The former grid-scaled retry floor is no longer used; attempts stop early
@@ -162,7 +162,7 @@ production initial conditions.
 RK pre-C2P gate with total/reduced energy and strict/compatibility modes,
 under ASan/UBSan. The test checks valid input, negative density, negative q,
 negative Psi, nonfinite momentum and a nonfinite CT face; U/V must remain
-unchanged. `PCP_NR` and `PCP_STAGE_LIMITING` are not required.
+unchanged. `PCP_NR` and `PCP_FOFC` are not required.
 
 `RMHD_FAILSAFE_PCP_CHECK=YES` enables the RK gate with failsafe.
 `RMHD_FAILSAFE_PCP_STRICT=NO` is the default compatibility policy: failures

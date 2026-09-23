@@ -160,7 +160,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
    * flagged cells with first-order LLF fluxes (FOFC), then test again.
    * FinishStage handles exhausted retries through ordinary C2P/PressureFix,
    * including the fatal exit if recovery fails with FAILSAFE disabled. */
-  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   RMHD_PCP_BeginStage(d,Dts);
   do {
   #endif
@@ -192,7 +192,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   CT_AverageStaggeredFields (d, 1, &box, grid);
 #endif
 
-#if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+#if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   err = RMHD_PCP_CheckStage(d,grid);
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
@@ -241,7 +241,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if PARTICLES == PARTICLES_LP
   Particles_LP_Update (d, Dts, g_dt, grid);
   #endif
-  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   RMHD_PCP_BeginStage(d,Dts);
   do {
   #endif
@@ -288,7 +288,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 /* -- 2f. Convert to Primitive -- */
 
-  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   err = RMHD_PCP_CheckStage(d,grid);
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
@@ -327,7 +327,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if PARTICLES == PARTICLES_LP
   Particles_LP_Update (d, Dts, g_dt, grid);
   #endif
-  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   RMHD_PCP_BeginStage(d,Dts);
   do {
   #endif
@@ -367,7 +367,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   FARGO_ShiftParticles (d, grid, g_dt);
   #endif
   #endif
-  #if (PHYSICS == RMHD) && (PCP_STAGE_LIMITING == YES)
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   err = RMHD_PCP_CheckStage(d,grid);
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));

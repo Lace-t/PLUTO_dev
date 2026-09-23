@@ -66,7 +66,7 @@ void States (const Sweep *sweep, int beg, int end, Grid *grid)
   PrimToCons (vp, up, beg, end);
   PrimToCons (vm, um, beg, end);
 
-#if (PCP_NR == YES) || (PCP_STAGE_LIMITING == YES)
+#if (PCP_NR == YES) || (PCP_FOFC == YES)
   RMHD_PCP_LimitStates(sweep, beg, end);
 #endif
 }
