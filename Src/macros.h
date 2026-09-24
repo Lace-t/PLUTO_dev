@@ -181,8 +181,7 @@ http://stackoverflow.com/questions/11303135/broadcast-message-for-all-processes-
           {printLog ("! Abort\n");            \
            LogFileFlush();                    \
            MPI_Abort(MPI_COMM_WORLD, e_code); \
-           MPI_Finalize();                    \
-           exit(e_code);}
+           _Exit(e_code);}
   #else
    #define QUIT_PLUTO(e_code)   exit(e_code);
   #endif

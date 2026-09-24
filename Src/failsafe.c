@@ -225,9 +225,6 @@ void FailSafe (Data *d, timeStep *Dts, Grid *grid)
     /* err is globally reduced: every rank finishes its dump before abort. */
     if (err) {
       // FailSafeDumpBadCells(d, grid, "failsafe_final");
-#ifdef PARALLEL
-      MPI_Barrier(MPI_COMM_WORLD);
-#endif
     }
     if (err && FlagCheck(d->flag, FLAG_CONS2PRIM_FAIL)) {
       printLog ("  - Final flag:\n");
@@ -410,9 +407,8 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
            "last_dt=%.4g max_halvings=%d\n",
            n0,g_intStage,dt0,g_dt,RMHD_FAILSAFE_MAX_RETRIES);
   LogFileFlush();
-#ifdef PARALLEL
-  MPI_Barrier(MPI_COMM_WORLD);
-#endif
+  /* Do not synchronize on the fatal path: a rank stalled in an earlier
+   * collective would otherwise strand all ranks before MPI_Abort. */
   QUIT_PLUTO(1);
 }
 #endif  /* PHYSICS != RMHD */
