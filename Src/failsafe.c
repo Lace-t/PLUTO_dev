@@ -392,16 +392,16 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
     }
     // printLog("RMHD_FAILSAFE failed: attempt=%d stage=%d dt=%.17g err=%d\n",
     //          attempt,g_intStage,g_dt,err);
-    // {
-    //   char phase[48];
-    //   snprintf(phase,sizeof(phase),"failsafe_attempt%02d",attempt);
-    //   FailSafeDumpBadCells(d,grid,phase);
-    // }
+    {
+      char phase[48];
+      snprintf(phase,sizeof(phase),"failsafe_attempt%02d",attempt);
+      FailSafeDumpBadCells(d,grid,phase);
+    }
   }
 
   /* All ranks dump before any rank aborts, even if the failure has no C2P
    * flag (for example a rejected PCP stage or unusable ghost primitive). */
-  //FailSafeDumpBadCells(d,grid,"failsafe_final");
+  FailSafeDumpBadCells(d,grid,"failsafe_final");
   if (FlagCheck(d->flag,FLAG_CONS2PRIM_FAIL)) FlagShow(d,FLAG_CONS2PRIM_FAIL);
   printLog("! RMHD_FAILSAFE exhausted: step=%ld stage=%d original_dt=%.4g "
            "last_dt=%.4g max_halvings=%d\n",

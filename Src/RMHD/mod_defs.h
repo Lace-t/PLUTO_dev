@@ -195,8 +195,12 @@ enum KWAVES {
   #define PCP_FOFC NO
 #endif
 
+#ifndef RMHD_FAILSAFE_PCP_STRICT
+  #define RMHD_FAILSAFE_PCP_STRICT NO
+#endif 
+
 #ifndef PCP_STAGE_LOCAL_PASSES
-#define PCP_STAGE_LOCAL_PASSES 2
+#define PCP_STAGE_LOCAL_PASSES 4
 #endif
 #if PCP_STAGE_LOCAL_PASSES < 1 || PCP_STAGE_LOCAL_PASSES > 16
 #error "PCP_STAGE_LOCAL_PASSES must be in [1,16]"
@@ -210,16 +214,9 @@ enum KWAVES {
 	#endif
 #endif
 
-#ifndef RMHD_FAILSAFE_PCP_STRICT
-  /* NO retains the existing pressure-recovery policy for states passing
-     the hard D/energy/q checks but failing the full PCP check. YES rejects
-     every failed PCP check; cold production restarts may require a more
-     substantial change of the spatial update to run in this mode. */
-  #define RMHD_FAILSAFE_PCP_STRICT PCP_FOFC
-#endif
 #ifndef RMHD_FAILSAFE_LOCAL_PASSES
   /* Accumulate newly discovered bad regions at fixed dt before reducing it. */
-  #define RMHD_FAILSAFE_LOCAL_PASSES 2
+  #define RMHD_FAILSAFE_LOCAL_PASSES 4
 #endif
 #if RMHD_FAILSAFE_LOCAL_PASSES < 1
   #error "RMHD_FAILSAFE_LOCAL_PASSES must be positive"
