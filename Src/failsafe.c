@@ -276,6 +276,20 @@ void RMHD_LocalFallbackFlag(Data *d, uint16_t ***fallback)
   }
 }
 
+/* All ranks reach the RMHD fatal path only after Integrate() has reduced
+ * the failure over MPI_COMM_WORLD.  Calling MPI_Abort from every rank can
+ * leave Open MPI PRTE daemons alive after a multi-node failure; let rank 0
+ * notify the communicator and make all other ranks exit immediately. */
+static void RMHD_FailSafeAbort(int status)
+{
+#ifdef PARALLEL
+  if (prank == 0) MPI_Abort(MPI_COMM_WORLD, status);
+  _Exit(status);
+#else
+  exit(status);
+#endif
+}
+
 /* Normal step -> local fallback at dt0 -> local fallback at dt0/2^n.
  * Every trial starts from the same full-step fluid state. Only successful
  * trials commit U/V/B and Dts; g_dt remains the accepted step for main().
@@ -426,7 +440,7 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
   LogFileFlush();
   /* Do not synchronize on the fatal path: a rank stalled in an earlier
    * collective would otherwise strand all ranks before MPI_Abort. */
-  QUIT_PLUTO(1);
+  RMHD_FailSafeAbort(1);
 }
 #endif  /* PHYSICS != RMHD */
 #endif  /* FAILSAFE == YES */
