@@ -194,7 +194,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   err = RMHD_PCP_CheckStage(d,grid);
+  /* Consistent CT has already recovered and validated V, then rebuilt U
+   * with CT B. No intervening update is allowed on the PCP_FOFC path. */
+  #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
+  #endif
   } while (err && RMHD_PCP_RetryStage(d,Dts));
   err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
@@ -290,7 +294,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
   #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   err = RMHD_PCP_CheckStage(d,grid);
+  /* Consistent CT has already recovered and validated V, then rebuilt U
+   * with CT B. No intervening update is allowed on the PCP_FOFC path. */
+  #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
+  #endif
   } while (err && RMHD_PCP_RetryStage(d,Dts));
   err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
@@ -369,7 +377,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #endif
   #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
   err = RMHD_PCP_CheckStage(d,grid);
+  /* Consistent CT has already recovered and validated V, then rebuilt U
+   * with CT B. No intervening update is allowed on the PCP_FOFC path. */
+  #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
+  #endif
   } while (err && RMHD_PCP_RetryStage(d,Dts));
   err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;

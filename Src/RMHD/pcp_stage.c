@@ -51,7 +51,7 @@ void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
 }
 
 /* Shared acceptance policy for stage input and mapper-modified states. */
-int RMHD_PCP_CheckConservative(const double *u)
+static int PCPClassifyConservative(const double *u)
 {
   int n;
   NVAR_LOOP(n) if (!isfinite(u[n])) return 0;
@@ -64,9 +64,14 @@ int RMHD_PCP_CheckConservative(const double *u)
   E += u[RHO];
 #endif
   /* Compatibility mode defers the remaining PCP conditions to recovery. */
-  return isfinite(E) && u[RHO] > 0.0 && u[ENG] > 0.0
-      && E > hypot(u[RHO],hypot(u[MX1],hypot(u[MX2],u[MX3])));
+  return (isfinite(E) && u[RHO] > 0.0 && u[ENG] > 0.0
+      && E > hypot(u[RHO],hypot(u[MX1],hypot(u[MX2],u[MX3])))) ? 2 : 0;
 #endif
+}
+
+int RMHD_PCP_CheckConservative(const double *u)
+{
+  return PCPClassifyConservative(u) != 0;
 }
 
 /* Check the actual RK average after its RK combination and CT averaging,
@@ -80,7 +85,10 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
   (void)grid;
   DOM_LOOP(k,j,i) {
     double *u = d->Uc[k][j][i];
-    int cell_bad = !RMHD_PCP_CheckConservative(u);
+    /* 0: rejected, 1: strict pass, 2: deferred to native recovery.
+     * Reuse the strict result for diagnostics instead of evaluating it twice. */
+    int classification = PCPClassifyConservative(u);
+    int cell_bad = classification == 0;
     if (d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) cell_bad = 1;
 #ifdef STAGGERED_MHD
     /* Both faces bounding the active cell must be finite. */
@@ -100,7 +108,7 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
       local_cells++;
     }
 #if RMHD_FAILSAFE_PCP_STRICT == NO
-    else if (!RMHD_PCP_Check(u)) deferred_cells++;
+    else if (classification == 2) deferred_cells++;
 #endif
   }
   if (local_cells) WARNING(printLog("RMHD_STAGE_REJECT: step=%ld stage=%d rank=%d "
@@ -185,20 +193,24 @@ void RMHD_PCP_BeginStage(Data *d, timeStep *Dts)
 int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
 {
   int i,j,k,n;
-  long local[2]={0,0}, total[2];
-  /* Count the cumulative mask with the new seeds before restoration. Both
+  long local[3]={0,0,0}, total[3];
+  /* Count bad, cumulative and newly marked cells before restoration. All
    * counts share the one collective needed to decide whether to retry. */
   DOM_LOOP(k,j,i) {
     int bad=!!(d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL);
     local[0] += bad;
     local[1] += bad || (stage_mask[k][j][i]&FLAG_LF);
+    local[2] += bad && !(stage_mask[k][j][i]&FLAG_LF);
   }
 #ifdef PARALLEL
-  MPI_Allreduce(local,total,2,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
+  MPI_Allreduce(local,total,3,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
 #else
   memcpy(total,local,sizeof total);
 #endif
-  if (stage_pass == PCP_STAGE_LOCAL_PASSES || total[0] == 0) {
+  if (stage_pass == PCP_STAGE_LOCAL_PASSES || total[0] == 0 ||
+      (stage_pass > 0 && total[2] == 0)) {
+    /* The input snapshot, dt and LF operator have not changed. Repeating
+     * this candidate without any new global mask cells cannot repair it. */
     /* Retain all observed seeds for the outer full-step fallback, while
      * leaving rejected U/V/B intact for its diagnostics. */
     TOT_LOOP(k,j,i) if (stage_mask[k][j][i]&FLAG_LF)

@@ -195,6 +195,12 @@ enum KWAVES {
   #define PCP_FOFC NO
 #endif
 
+/* Separate the read-only native recovery from sparse exceptional repairs.
+ * NO retains the legacy row mapper for controlled performance comparisons. */
+#ifndef RMHD_PCP_SPLIT_RECOVERY
+  #define RMHD_PCP_SPLIT_RECOVERY YES
+#endif
+
 #ifndef RMHD_FAILSAFE_PCP_STRICT
   #define RMHD_FAILSAFE_PCP_STRICT NO
 #endif 
@@ -293,6 +299,7 @@ void RMHD_PCP_EndStage(Data *);
 int RMHD_PCP_FinishStage(Data *, int, RBox *, Grid *);
 int RMHD_PCP_CheckConservative(const double *);
 int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr, Data_Arr, uint16_t ***, RBox *, Grid *);
+int RMHD_PCP_ConsToPrimRow(double **, double **, int, int, uint16_t *, int *, int *);
 int RMHD_PCP_CheckStage (Data *, Grid *);
 void RMHD_PCP_StageStates (const Sweep *, int, int);
 

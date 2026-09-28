@@ -7,6 +7,7 @@ for energy in 0 1; do
  for strict in 0 1; do
   cc -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
     -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -DCOUNT_PCP_CHECKS -Wl,--wrap=RMHD_PCP_Check \
     -I"$test_src" -I"$pluto_src" -I"$pluto_src/RMHD" -I"$pluto_src/EOS/Ideal" \
     -DRMHD_REDUCED_ENERGY="$energy" -DRMHD_FAILSAFE_PCP_STRICT="$strict" \
     "$test_src/test_stage_check.c" "$pluto_src/RMHD/pcp_stage.c" \

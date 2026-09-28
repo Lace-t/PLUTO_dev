@@ -55,11 +55,23 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
   int   current_dir;
   int   rejected = 0;
   (void)check_modified;
-  static double **v, **u;
+  static double **v;
+#if PHYSICS == RMHD && PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY != YES
+  static double **u;
+#endif
+#if PHYSICS == RMHD && PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY == YES
+  static int *changed;
+  int nchanged,m;
+#endif
 
   if (v == NULL){
     v = ARRAY_2D(NMAX_POINT, NVAR, double);
+#if PHYSICS == RMHD && PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY != YES
     u = ARRAY_2D(NMAX_POINT, NVAR, double);
+#endif
+#if PHYSICS == RMHD && PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY == YES
+    changed=ARRAY_1D(NMAX_POINT,int);
+#endif
   }
 
 /* ----------------------------------------------
@@ -90,13 +102,30 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
     }  
     #endif
 
-    #if PHYSICS == RMHD && PCP_FOFC == YES
+    #if PHYSICS == RMHD && PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY != YES
     if (check_modified) {
       for (i = ibeg; i <= iend; i++)
         memcpy(u[i],U[k][j][i],NVAR*sizeof(double));
     }
     #endif
 
+#if PHYSICS == RMHD && PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY == YES
+    if (check_modified) {
+      err_loc=RMHD_PCP_ConsToPrimRow(U[k][j],v,ibeg,iend,flag[k][j],changed,&nchanged);
+      /* Only exceptional recovery can modify U on the supported FOFC path.
+       * Keep the exact post-repair PCP policy without normal-cell copies. */
+      for (m=0; m<nchanged; m++) {
+        i=changed[m];
+        if (!RMHD_PCP_CheckConservative(U[k][j][i])) {
+          flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
+          if (U[k][j][i][RHO] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_DENSITY;
+          if (U[k][j][i][ENG] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;
+          rejected++;
+        }
+      }
+    } else
+#endif
+    {
     #ifdef HIGH_ORDER
     err_loc = 0;
     for (i = ibeg; i <= iend; i++){  g_i = i;
@@ -110,12 +139,14 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
     #else
     err_loc = ConsToPrim (U[k][j], v, ibeg, iend, flag[k][j]);
     #endif
+    }
 
     err = MAX(err, err_loc);
     for (i = ibeg; i <= iend; i++) {
       NVAR_LOOP(nv) V[nv][k][j][i] = v[i][nv];
       #if PHYSICS == RMHD && PCP_FOFC == YES
       if (check_modified) {
+#if RMHD_PCP_SPLIT_RECOVERY != YES
         if (memcmp(u[i],U[k][j][i],NVAR*sizeof(double)) != 0
             && !RMHD_PCP_CheckConservative(U[k][j][i])) {
           flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
@@ -123,6 +154,7 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
           if (U[k][j][i][ENG] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;
           rejected++;
         }
+#endif
         if (flag[k][j][i] & FLAG_CONS2PRIM_FAIL) err = 1;
       }
       #endif

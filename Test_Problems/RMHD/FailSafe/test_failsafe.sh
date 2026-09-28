@@ -13,7 +13,7 @@ for pcp in 0 1; do
     "$test_src/test_failsafe.c" "$pluto_src/failsafe.c" "$pluto_src/arrays.c" \
     -lm -o "test_${pcp}_$retries"
   modes=(0 1 -1 -2 -3)
-  if (( retries > 0 )); then modes+=(2 3 "$((passes+1))"); fi
+  if (( retries > 0 )); then modes+=(2 3 "$((retries+1+(passes>1)))"); fi
   for mode in "${modes[@]}"; do
     case_out="$test_out/passes${passes}_pcp${pcp}_retries${retries}_mode${mode}"
     mkdir -p "$case_out"

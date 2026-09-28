@@ -169,7 +169,11 @@ http://stackoverflow.com/questions/11303135/broadcast-message-for-all-processes-
 #ifdef CHOMBO
  #ifdef PARALLEL
    #define QUIT_PLUTO(e_code)   \
-          {error("Abort"); MPI_Abort(MPI_COMM_WORLD, e_code); exit(e_code);}
+          {error("Abort");      \
+           fflush(stdout);       \
+           fflush(stderr);       \
+           MPI_Abort(MPI_COMM_WORLD, e_code); \
+           _Exit(e_code);}
  #else
    #define QUIT_PLUTO(e_code)   \
           {error("Abort"); exit(e_code);}
@@ -180,6 +184,8 @@ http://stackoverflow.com/questions/11303135/broadcast-message-for-all-processes-
    #define QUIT_PLUTO(e_code)                 \
           {printLog ("! Abort\n");            \
            LogFileFlush();                    \
+           fflush(stdout);                     \
+           fflush(stderr);                     \
            MPI_Abort(MPI_COMM_WORLD, e_code); \
            _Exit(e_code);}
   #else

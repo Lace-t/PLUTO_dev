@@ -4,7 +4,7 @@ test_src=$(cd "$(dirname "$0")" && pwd)
 pluto_src=$(cd "$test_src/../../../Src" && pwd)
 test_out=$(mktemp -d /tmp/pluto-stage-mapper.XXXXXX)
 flags=(-std=c17 -O1 -g -ffunction-sections -fdata-sections -Wl,--gc-sections
- -DPCP_FOFC=1 -DUPDATE_VECTOR_POTENTIAL=0
+ -DPCP_FOFC=1 -DUPDATE_VECTOR_POTENTIAL=0 -DRMHD_PCP_SPLIT_RECOVERY=0
  -I"$test_src" -I"$pluto_src" -I"$pluto_src/RMHD" -I"$pluto_src/EOS/Ideal")
 sources=("$test_src/test_stage_mapper.c" "$pluto_src/mappers3D.c"
  "$pluto_src/RMHD/pcp_stage.c" "$pluto_src/RMHD/pcp_nr.c"

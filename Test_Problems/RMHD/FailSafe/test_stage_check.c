@@ -5,6 +5,13 @@
 #include <assert.h>
 #include <stdarg.h>
 
+#ifdef COUNT_PCP_CHECKS
+static int pcp_checks;
+int __real_RMHD_PCP_Check(const double *);
+int __wrap_RMHD_PCP_Check(const double *u)
+{ pcp_checks++; return __real_RMHD_PCP_Check(u); }
+#endif
+
 void printLog(const char *fmt, ...)
 {
   va_list args;
@@ -62,7 +69,13 @@ int main(int argc, char **argv)
 #if RMHD_FAILSAFE_PCP_STRICT == NO
       if (test==3) rejected=0; /* explicitly defer Psi failure to native C2P */
 #endif
+#ifdef COUNT_PCP_CHECKS
+      pcp_checks=0;
+#endif
       assert(RMHD_PCP_CheckStage(&d,&grid)==rejected);
+#ifdef COUNT_PCP_CHECKS
+      assert(pcp_checks==64-(test==4 && prank==0));
+#endif
     assert(memcmp(saved,d.Uc[3][3][3],sizeof(saved))==0);
     TOT_LOOP(k,j,i) NVAR_LOOP(n) assert(d.Vc[n][k][j][i]==123.0+n);
     if (rejected && prank==0) assert(d.flag[3][3][3]&FLAG_CONS2PRIM_FAIL);

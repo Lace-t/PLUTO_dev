@@ -126,7 +126,8 @@ void PrimToCons (double **uprim, double **ucons, int beg, int end)
 }
 
 /* ********************************************************************* */
-int ConsToPrim (double **ucons, double **uprim, int beg, int end, uint16_t *flag)
+static int ConsToPrimImpl (double **ucons, double **uprim, int beg, int end,
+                          uint16_t *flag, int energy_result)
 /*!
  * Convert from conservative to primitive variables.
  *
@@ -213,7 +214,9 @@ int ConsToPrim (double **ucons, double **uprim, int beg, int end, uint16_t *flag
      -------------------------------------------- */
 
     if (method == ENERGY_SOLVE){
-      err = RMHD_EnergySolve(u, v);
+      /* A sparse caller may already have tried the native solver once.
+       * Positive: its error; negative: it succeeded; zero: not attempted. */
+      err = energy_result ? MAX(energy_result,0) : RMHD_EnergySolve(u, v);
 
       if (err){   /* Try pressure fix */
         WARNING(
@@ -332,6 +335,72 @@ int ConsToPrim (double **ucons, double **uprim, int beg, int end, uint16_t *flag
   }
   return ifail;
 }
+
+int ConsToPrim(double **ucons, double **uprim, int beg, int end, uint16_t *flag)
+{
+  return ConsToPrimImpl(ucons,uprim,beg,end,flag,0);
+}
+
+#if PCP_FOFC == YES && RMHD_PCP_SPLIT_RECOVERY == YES
+#if ENTROPY_SWITCH != NO || RADIATION != NO
+#error "Split FOFC recovery requires a native solver that does not modify U"
+#endif
+/* The supported FOFC path has neither entropy nor radiation. Its native
+ * EnergySolve writes only V (including on error), so normal cells need no
+ * U snapshot or change detection. Keep the complete legacy repair order for
+ * exceptions and never repeat an already attempted native solve. */
+int RMHD_PCP_ConsToPrimRow(double **ucons, double **uprim, int beg, int end,
+                          uint16_t *flag, int *changed, int *nchanged)
+{
+  static int *failed, *results;
+  int i,n,m,nfailed=0,ifail=0;
+  if (failed == NULL) {
+    failed=ARRAY_1D(NMAX_POINT,int);
+    results=ARRAY_1D(NMAX_POINT,int);
+  }
+  *nchanged=0;
+  for (i=beg; i<=end; i++) {
+    double *u=ucons[i], *v=uprim[i], v2;
+    int result=0;
+    /* Match the legacy guards exactly, including equality at zero. Floors
+     * and the stage PCP decision are not changed by this scheduling split. */
+    if (u[RHO] < 0.0 || u[ENG] < 0.0) {
+      failed[nfailed]=i; results[nfailed++]=0;
+      continue;
+    }
+    v[BX1]=u[BX1]; v[BX2]=u[BX2]; v[BX3]=u[BX3];
+    result=RMHD_EnergySolve(u,v);
+    if (result) {
+      failed[nfailed]=i; results[nfailed++]=result;
+      continue;
+    }
+    v2=v[VX1]*v[VX1]+v[VX2]*v[VX2]+v[VX3]*v[VX3];
+    if (v2 >= 1.0) {
+      failed[nfailed]=i; results[nfailed++]=-1;
+      continue;
+    }
+#if NSCL > 0
+    if (u[RHO] != 0.0 && isfinite(u[RHO])) {
+      NSCL_LOOP(n) v[n]=u[n]/u[RHO];
+    } else {
+      NSCL_LOOP(n) v[n]=0.0;
+    }
+#endif
+#ifdef GLM_MHD
+    v[PSI_GLM]=u[PSI_GLM];
+#endif
+    if (flag[i] & FLAG_CONS2PRIM_FAIL) ifail=1;
+  }
+  for (m=0; m<nfailed; m++) {
+    double before[NVAR];
+    i=failed[m];
+    memcpy(before,ucons[i],sizeof before);
+    if (ConsToPrimImpl(ucons,uprim,i,i,flag,results[m])) ifail=1;
+    if (memcmp(before,ucons[i],sizeof before)) changed[(*nchanged)++]=i;
+  }
+  return ifail;
+}
+#endif
 #undef  ENERGY_SOLVE 
 #undef  ENTROPY_SOLVE
 #undef  PRESSURE_FIX

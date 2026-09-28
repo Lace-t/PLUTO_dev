@@ -10,6 +10,14 @@ static int calls, success_call, no_flags;
 static double initial_time;
 static Data *test_data;
 
+/* Seeds grow once (A then B). Further failures at the same dt stagnate;
+ * unflagged failures stagnate immediately after the first fallback. */
+static double ExpectedDt(int call)
+{
+  int original_passes = !no_flags && RMHD_FAILSAFE_LOCAL_PASSES > 1 ? 2 : 1;
+  return ldexp(1.0,-MAX(0,call-original_passes));
+}
+
 void printLog(const char *fmt, ...)
 {
   va_list args;
@@ -44,7 +52,7 @@ int AL_Exchange(void *buffer, int size)
 int Integrate(Data *d, timeStep *Dts, Grid *grid)
 {
   int i,j,k,n;
-  double expected_dt = ldexp(1.0,-(MAX(0,calls-1)/RMHD_FAILSAFE_LOCAL_PASSES));
+  double expected_dt = ExpectedDt(calls);
   (void)grid;
   assert(g_dt == expected_dt && g_time == initial_time);
   assert(g_rmhd_failsafe_low_order == (calls > 0));
@@ -102,7 +110,8 @@ int Integrate(Data *d, timeStep *Dts, Grid *grid)
 static void CheckExit(void)
 {
   if (success_call >= 0) return;
-  assert(calls == (initial_time == 0.0 ? (RMHD_FAILSAFE_MAX_RETRIES+1)*RMHD_FAILSAFE_LOCAL_PASSES+1 : 0));
+  assert(calls == (initial_time == 0.0 ? RMHD_FAILSAFE_MAX_RETRIES+2+
+                   (!no_flags && RMHD_FAILSAFE_LOCAL_PASSES>1) : 0));
   if (calls) assert(test_data->Uc[5][5][5][RHO] == -9.0);
 }
 
@@ -154,7 +163,7 @@ int main(int argc, char **argv)
   FailSafe(&d,&dts,&grid);
   assert(g_rmhd_failsafe_low_order == 0);
   assert(success_call >= 0 && calls == success_call+1);
-  assert(g_dt == ldexp(1.0,-(MAX(0,success_call-1)/RMHD_FAILSAFE_LOCAL_PASSES)));
+  assert(g_dt == ExpectedDt(success_call));
   assert(g_time == initial_time && g_stepNumber == 12345678901L);
   assert(d.Uc[5][5][5][RHO] == -9.0 && dts.invDt_hyp == -4.0);
   puts("PASS retry order, full rollback, accumulated flags, accepted state");

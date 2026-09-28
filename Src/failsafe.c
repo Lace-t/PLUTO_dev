@@ -284,7 +284,7 @@ void RMHD_LocalFallbackFlag(Data *d, uint16_t ***fallback)
  */
 void FailSafe(Data *d, timeStep *Dts, Grid *grid)
 {
-  int i,j,k,n,err,attempt;
+  int i,j,k,n,err,attempt,progress;
   long int n0 = g_stepNumber;
   int stage0 = g_intStage;
   double t0 = g_time, dt0 = g_dt, trial_dt;
@@ -378,10 +378,20 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
     }
     g_dt = trial_dt;
     err = Integrate(d,Dts,grid);
+    /* A seed already carrying HLL has already installed its complete
+     * FLAT/MINMOD neighbourhood. At fixed dt it cannot grow the fallback.
+     * Healthy attempts do not scan flags. Share this decision with the
+     * existing error reduction, not another collective. */
+    progress = 0;
+    if (err) DOM_LOOP(k,j,i) {
+      if ((d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) &&
+          !(fallback[k][j][i] & FLAG_HLL)) progress = 1;
+    }
 #ifdef PARALLEL
     {
-      int local_bad = (err != 0);
-      MPI_Allreduce(&local_bad,&err,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
+      int local[2] = {err != 0,progress}, global[2];
+      MPI_Allreduce(local,global,2,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
+      err=global[0]; progress=global[1];
     }
 #endif
     if (err == 0) {
@@ -396,6 +406,13 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
       char phase[48];
       snprintf(phase,sizeof(phase),"failsafe_attempt%02d",attempt);
       FailSafeDumpBadCells(d,grid,phase);
+    }
+    if (attempt > 0 && !progress) {
+      /* Skip the remaining identical-dt passes. The loop increment selects
+       * the first attempt at the next halving, or the exhaustion exit.
+       * Always try one fallback at each dt, even for unflagged failures. */
+      attempt += RMHD_FAILSAFE_LOCAL_PASSES - 1
+                 - (attempt-1)%RMHD_FAILSAFE_LOCAL_PASSES;
     }
   }
 
