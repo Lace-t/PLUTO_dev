@@ -33,7 +33,7 @@ static int PCPFinite (double x)
 
 /* Wu et al. G_0 admissibility test.  The small relative margins prevent a
    state on a floating-point boundary from being passed to the NR solver. */
-int RMHD_PCP_Check (const double *u)
+static int PCPCheck (const double *u, int q_only)
 {
   double D, E, m2, B2, tau, phi, rad, lhs, rhs, psi_d, psi_scale;
   long double psi;
@@ -74,6 +74,8 @@ int RMHD_PCP_Check (const double *u)
   } else {
     return 0;
   }
+
+  if (q_only) return 1;
 
   a = E*E - D*D - m2;
   if (!PCPFinite(a) || a < 0.0) return 0;
@@ -120,18 +122,25 @@ int RMHD_PCP_Check (const double *u)
   return isfinite((double)psi) && psi >= 0.0L;
 }
 
+
+int RMHD_PCP_Check (const double *u)
+{
+  return PCPCheck(u, 0);
+}
+
 /* Scale only (D,m,E), keeping the face magnetic field untouched.  This is
    important for staggered CT: both states on a face retain the same B_n. */
 int RMHD_PCP_Limit (const double *u0, double *u)
 {
   int k, n;
-  double theta, lo, hi, mid;
-  double cand[NVAR], anchor[NVAR];
+  double theta, lo, hi, mid, epsD, d1, d2;
+  double cand[NVAR], anchor[NVAR], stage[NVAR];
 
-  /* Return values: -1 = no admissible anchor, 0 = unchanged, 1 = limited. */
+  /* Return values: -1 = failed (input unchanged), 0 = unchanged, 1 = limited. */
   if (u == NULL) return -1;
   if (RMHD_PCP_Check(u)) return 0;
   if (u0 == NULL || !RMHD_PCP_Check(u0)) return -1;
+  for (n = 0; n < NVAR; n++) if (!PCPFinite(u[n])) return -1;
 
   /* Keep the face magnetic field fixed for CT.  The actual bisection anchor
      is therefore the center fluid state paired with that face field, which
@@ -142,28 +151,68 @@ int RMHD_PCP_Limit (const double *u0, double *u)
   anchor[BX3] = u[BX3];
   if (!RMHD_PCP_Check(anchor)) return -1;
 
-  //左右界面的重构状态相对于单元中心参考状态的偏差
+  /* Wu stages, adapted to CT: B is fixed at every stage.  Stage 1 changes
+     only D; stages 2 and 3 use one common theta for (D,m,E). */
   for (n = 0; n < NVAR; n++) cand[n] = u[n];
-  lo = 0.0;
-  hi = 1.0;
-  for (k = 0; k < PCP_LIMIT_ITER; k++) {
-    mid = 0.5*(lo + hi);
-    for (n = 0; n < NVAR; n++) cand[n] = u[n];
-    cand[RHO] = anchor[RHO] + mid*(u[RHO] - anchor[RHO]);
-    cand[MX1] = anchor[MX1] + mid*(u[MX1] - anchor[MX1]);
-    cand[MX2] = anchor[MX2] + mid*(u[MX2] - anchor[MX2]);
-    cand[MX3] = anchor[MX3] + mid*(u[MX3] - anchor[MX3]);
-    cand[ENG] = anchor[ENG] + mid*(u[ENG] - anchor[ENG]);
-    if (RMHD_PCP_Check(cand)) lo = mid;
-    else                      hi = mid;
+  epsD = nextafter(PCP_ABS_FLOOR, INFINITY);
+  if (u[RHO] < epsD) {
+    theta = (anchor[RHO]-epsD)/(anchor[RHO]-u[RHO]);
+    if (!PCPFinite(theta)) return -1;
+    theta = fmax(0.0, fmin(1.0, theta));
+    cand[RHO] = epsD;
   }
-  theta = lo;
-  u[RHO] = anchor[RHO] + theta*(u[RHO] - anchor[RHO]);
-  u[MX1] = anchor[MX1] + theta*(u[MX1] - anchor[MX1]);
-  u[MX2] = anchor[MX2] + theta*(u[MX2] - anchor[MX2]);
-  u[MX3] = anchor[MX3] + theta*(u[MX3] - anchor[MX3]);
-  u[ENG] = anchor[ENG] + theta*(u[ENG] - anchor[ENG]);
-  if (!RMHD_PCP_Check(u)) return -1;
+#if RMHD_REDUCED_ENERGY == YES
+  /* ENG stores E-D: changing only D must leave the full energy unchanged. */
+  cand[ENG] = u[ENG] + (u[RHO] - cand[RHO]);
+#endif
+  d1 = cand[RHO];
+  memcpy(stage, cand, sizeof(stage));
+
+  /* Stage 2: q constraint, with D,m,E scaled together from the anchor. */
+  if (!PCPCheck(cand, 1)) {
+    lo = 0.0; hi = 1.0;
+    for (k = 0; k < PCP_LIMIT_ITER; k++) {
+      mid = 0.5*(lo+hi);
+      cand[RHO] = anchor[RHO] + mid*(d1-anchor[RHO]);
+      cand[MX1] = anchor[MX1] + mid*(u[MX1]-anchor[MX1]);
+      cand[MX2] = anchor[MX2] + mid*(u[MX2]-anchor[MX2]);
+      cand[MX3] = anchor[MX3] + mid*(u[MX3]-anchor[MX3]);
+      cand[ENG] = anchor[ENG] + mid*(stage[ENG]-anchor[ENG]);
+      if (PCPCheck(cand, 1)) lo=mid; else hi=mid;
+    }
+    theta=lo;
+    cand[RHO]=anchor[RHO]+theta*(d1-anchor[RHO]);
+    cand[MX1]=anchor[MX1]+theta*(u[MX1]-anchor[MX1]);
+    cand[MX2]=anchor[MX2]+theta*(u[MX2]-anchor[MX2]);
+    cand[MX3]=anchor[MX3]+theta*(u[MX3]-anchor[MX3]);
+    cand[ENG]=anchor[ENG]+theta*(stage[ENG]-anchor[ENG]);
+  }
+  d2 = cand[RHO];
+  memcpy(stage, cand, sizeof(stage));
+
+  /* Stage 3: Psi constraint, again with one common theta for fluid fields. */
+  if (!RMHD_PCP_Check(cand)) {
+    lo=0.0; hi=1.0;
+    for (k=0; k<PCP_LIMIT_ITER; k++) {
+      mid=0.5*(lo+hi);
+      for (n=0; n<NVAR; n++) cand[n]=u[n];
+      cand[RHO]=anchor[RHO]+mid*(d2-anchor[RHO]);
+      cand[MX1]=anchor[MX1]+mid*(stage[MX1]-anchor[MX1]);
+      cand[MX2]=anchor[MX2]+mid*(stage[MX2]-anchor[MX2]);
+      cand[MX3]=anchor[MX3]+mid*(stage[MX3]-anchor[MX3]);
+      cand[ENG]=anchor[ENG]+mid*(stage[ENG]-anchor[ENG]);
+      if (RMHD_PCP_Check(cand)) lo=mid; else hi=mid;
+    }
+    theta=lo;
+    for (n=0; n<NVAR; n++) cand[n]=u[n];
+    cand[RHO]=anchor[RHO]+theta*(d2-anchor[RHO]);
+    cand[MX1]=anchor[MX1]+theta*(stage[MX1]-anchor[MX1]);
+    cand[MX2]=anchor[MX2]+theta*(stage[MX2]-anchor[MX2]);
+    cand[MX3]=anchor[MX3]+theta*(stage[MX3]-anchor[MX3]);
+    cand[ENG]=anchor[ENG]+theta*(stage[ENG]-anchor[ENG]);
+  }
+  if (!RMHD_PCP_Check(cand)) return -1;
+  memcpy(u, cand, sizeof(cand));
   return 1;
 }
 
@@ -438,16 +487,15 @@ int RMHD_PCP_NR (const double *u, double *v)
   if (!PCPFinite(v[VX1]) || !PCPFinite(v[VX2]) || !PCPFinite(v[VX3])
       || !PCPFinite(v2) || v2 >= 1.0) return 1;
   lor_check = 1.0/sqrt(1.0 - v2);
-  rel = fabs(lor_check - ev.lor)/fmax(1.0, lor_check);
-  /* The explicit velocity formula and the stable Wcal expression can differ
-     by several ulps after cancellation in magnetically dominated states.
-     Keep this tighter than the conservative round-trip check, but do not
-     require bitwise agreement. */
-  if (!PCPFinite(lor_check) || rel > 1.e-10) return 1;
+  if (!PCPFinite(lor_check)) return 1;
 
   /* Paper (2.13): calculate the final thermodynamics from the recovered
      velocity and the final xi, so D = rho W and p = P(rho,h) use the
-     same Lorentz factor as the returned primitive vector. */
+     same Lorentz factor as the returned primitive vector.  Do not require
+     agreement with the internal Wcal to a fixed relative tolerance:
+     reconstructing W from explicit velocities amplifies round-off by O(W^2).
+     Validate the returned state with the physical and conservative round-trip
+     checks below instead. */
   v[RHO] = D/lor_check;
   v[PRS] = g0*(xi*(1.0 - v2) - v[RHO]);
   if (!PCPFinite(v[RHO]) || !PCPFinite(v[PRS]) ||
