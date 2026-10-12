@@ -58,9 +58,6 @@ int main(int argc, char **argv)
     g_dir=JDIR;
     err=RMHD_PCP_ConsToPrim3D_CheckModified(d.Uc,d.Vc,d.flag,&box,&grid);
     int expected=mode>=2;
-#if RMHD_FAILSAFE_PCP_STRICT == NO
-    if (mode==3) expected=0;
-#endif
     assert(err==expected);
     assert(g_dir==JDIR);
     DOM_LOOP(k,j,i) NVAR_LOOP(n) assert(d.Vc[n][k][j][i]==123.0+n);

@@ -13,9 +13,9 @@
 
 #define PCP_MAX_ITER   500
 #define PCP_LIMIT_ITER 48
-#define PCP_TOL        1.e-13
+#define PCP_TOL        (8.0*DBL_EPSILON)
 #define PCP_ROOT_TOL   1.e-14
-#define PCP_ABS_FLOOR  1.e-13
+#define PCP_ABS_FLOOR  (8.0*DBL_EPSILON)
 
 static double PCPFullEnergy (const double *u)
 {
@@ -53,9 +53,7 @@ static int PCPCheck (const double *u, int q_only)
   a = D*D + m2;
   if (!PCPFinite(a) || a < 0.0) return 0;
   scale = fmax(1.0, fabs(E));
-  /* Wu et al. use an O(1e-13) safety set G_epsilon.  Keep q away from
-     its cancellation boundary by an absolute floor and an energy-scaled
-     relative margin; the latter is essential when E is large. */
+  /* A small rounding-scale margin protects the q subtraction. */
   eps_q = fmax(PCP_ABS_FLOOR, PCP_TOL*scale);
   /* Most states are well inside q > 0.  Avoid an unconditional long-double
      square root in this hot checker; use extended precision only when the
@@ -82,8 +80,7 @@ static int PCPCheck (const double *u, int q_only)
   /* Evaluate Psi on E - epsilon_E, as in the definition of G_epsilon.
      This avoids comparing Psi, which has a different physical scale, to an
      energy-sized tolerance. */
-  /* The paper's G_epsilon evaluates Psi at E-epsilon.  Its recommended
-     epsilon is 1e-13 and may scale with E in extreme states. */
+  /* Evaluate the safety-set energy shift at rounding-error scale. */
   eps_E = fmax(PCP_ABS_FLOOR, PCP_TOL*fmax(1.0, fabs(E)));
   Etest = E - eps_E;
   if (!PCPFinite(Etest) || Etest <= 0.0) return 0;
@@ -418,7 +415,9 @@ int RMHD_PCP_NR (const double *u, double *v)
   double v2, lor_check, rel, ucheck[NVAR];
   PCPEval ev;
 
-  if (u == NULL || v == NULL || !RMHD_PCP_Check(u)) return 1;
+  /* Stage/limiter admission is separate from recovery. Allow NR to try
+     states inside the checker's safety layer; validate the recovered state. */
+  if (u == NULL || v == NULL) return 1;
   D = u[RHO];
   E = PCPFullEnergy(u);
   m2 = u[MX1]*u[MX1] + u[MX2]*u[MX2] + u[MX3]*u[MX3];

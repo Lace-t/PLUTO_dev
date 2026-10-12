@@ -187,7 +187,8 @@ enum KWAVES {
 /* Opt-in, conservative three-dimensional a-posteriori stage limiter.
    FOFC replaces only faces touching rejected cells with first-order LLF;
    stage retries do not add the outer failsafe's FLAT/MINMOD buffer rings.
-   Independent of FAILSAFE: exhausted stages try ordinary C2P/PressureFix;
+   Independent of FAILSAFE: rejected stages first try direct PressureFix
+   and ordinary C2P only on healthy cells, then optional FOFC retries;
    unrecoverable states return to FAILSAFE or abort when it is disabled.
    This is not an assertion that the native CT update satisfies Wu's
    a-priori LxF theorem. Unsupported physics is rejected in pcp_stage.c. */
@@ -201,9 +202,6 @@ enum KWAVES {
   #define RMHD_PCP_SPLIT_RECOVERY YES
 #endif
 
-#ifndef RMHD_FAILSAFE_PCP_STRICT
-  #define RMHD_FAILSAFE_PCP_STRICT NO
-#endif 
 
 #ifndef PCP_STAGE_LOCAL_PASSES
 #define PCP_STAGE_LOCAL_PASSES 4
@@ -297,6 +295,7 @@ void RMHD_PCP_BeginStage(Data *, timeStep *);
 int RMHD_PCP_RetryStage(Data *, timeStep *);
 void RMHD_PCP_EndStage(Data *);
 int RMHD_PCP_FinishStage(Data *, int, RBox *, Grid *);
+int RMHD_PCP_TryPressureFix(Data *, int, RBox *, Grid *);
 int RMHD_PCP_CheckConservative(const double *);
 int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr, Data_Arr, uint16_t ***, RBox *, Grid *);
 int RMHD_PCP_ConsToPrimRow(double **, double **, int, int, uint16_t *, int *, int *);

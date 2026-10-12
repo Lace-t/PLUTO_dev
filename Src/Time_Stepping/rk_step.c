@@ -199,13 +199,18 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   #endif
+  if (err) err=RMHD_PCP_TryPressureFix(d,err,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
   err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
 #else
 
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
-    if (RMHD_PCP_CheckStage(d, grid)) return 1;
+    if (RMHD_PCP_CheckStage(d, grid)) {
+      err=RMHD_PCP_TryPressureFix(d,1,&box,grid);
+      err=RMHD_PCP_FinishStage(d,err,&box,grid);
+      if (err) return err;
+    } else
   #endif
     err = ConsToPrim3D(d->Uc,d->Vc,d->flag,&box,grid);
   
@@ -299,12 +304,17 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   #endif
+  if (err) err=RMHD_PCP_TryPressureFix(d,err,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
   err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
   #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
-  if (RMHD_PCP_CheckStage(d, grid)) return 1;
+  if (RMHD_PCP_CheckStage(d, grid)) {
+    err=RMHD_PCP_TryPressureFix(d,1,&box,grid);
+      err=RMHD_PCP_FinishStage(d,err,&box,grid);
+    if (err) return err;
+  } else
   #endif
   err = ConsToPrim3D(d->Uc,d->Vc,d->flag,&box,grid);
   #if FAILSAFE == YES
@@ -382,12 +392,17 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
   if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   #endif
+  if (err) err=RMHD_PCP_TryPressureFix(d,err,&box,grid);
   } while (err && RMHD_PCP_RetryStage(d,Dts));
   err = RMHD_PCP_FinishStage(d,err,&box,grid);
   if (err) return err;
   #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
-  if (RMHD_PCP_CheckStage(d, grid)) return 1;
+  if (RMHD_PCP_CheckStage(d, grid)) {
+    err=RMHD_PCP_TryPressureFix(d,1,&box,grid);
+      err=RMHD_PCP_FinishStage(d,err,&box,grid);
+    if (err) return err;
+  } else
   #endif
   err = ConsToPrim3D(d->Uc,d->Vc,d->flag,&box,grid);
   #if FAILSAFE == YES

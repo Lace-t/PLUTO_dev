@@ -26,16 +26,25 @@ flagged cells remain marked through subsequent retries of the same stage;
 the stage mask is removed on acceptance.
 
 `PCP_FOFC=YES` supports both `FAILSAFE=YES` and `FAILSAFE=NO`.
-After FOFC retries are exhausted, the final candidate is passed once to
-ordinary C2P, including its native PressureFix path. Stale C2P/PressureFix
-failure flags are cleared before that attempt. A collective preflight rejects
+With `PCP_FOFC=NO`, an enabled `RMHD_FAILSAFE_PCP_CHECK` uses the same
+direct PressureFix recovery immediately after rejection, without local
+FOFC retries. Successful recovery continues the remaining RK stages;
+failed recovery returns to full-step FAILSAFE. The check is enabled by
+default when `PCP_NR=YES`; it can also be enabled explicitly.
+Every rejected candidate goes directly to PressureFix before FOFC,
+skipping EnergySolve and PCP-NR. Healthy row segments use ordinary C2P to
+refresh their stage primitives. Failure flags are cleared only for the cells
+being repaired. A collective preflight rejects
 nonfinite conservative/face fields and nonpositive density; after recovery,
 finite U/V, positive primitive density/pressure, subluminal velocity and
 fresh recovery failure flags are checked collectively. This exit deliberately
 does not reapply the strict PCP criterion to a successful pressure-floor fix.
 PressureFix may change conservative energy. Recovery success accepts the
-stage and cleans its temporary mask. Recovery failure retains seeds for the
-outer full-step failsafe when enabled; otherwise it logs the step/stage/dt
+stage and cleans its temporary mask. Energy-change statistics are computed
+in the recovery path (the diagnostic print is currently commented out).
+Recovery failure restores the rejected U/V and retains seeds for the
+optional FOFC retries; if those are exhausted, the outer full-step failsafe
+handles the failure when enabled; otherwise it logs the step/stage/dt
 and terminates nonzero (MPI_Abort in parallel). An unrecovered candidate is
 never silently advanced with FAILSAFE disabled.
 `CT_RMHD_CONSISTENT` has no extra compile-time restriction. Its implementation is already scoped internally by
@@ -165,10 +174,10 @@ negative Psi, nonfinite momentum and a nonfinite CT face; U/V must remain
 unchanged. `PCP_NR` and `PCP_FOFC` are not required.
 
 `RMHD_FAILSAFE_PCP_CHECK=YES` enables the RK gate with failsafe.
-`RMHD_FAILSAFE_PCP_STRICT=NO` is the default compatibility policy: failures
-of the full check that pass finite/D/energy/q necessary conditions are
-counted as `deferred_to_c2p` and left to native recovery. This is not full
-PCP acceptance. Set STRICT=YES to reject every full-check failure.
+The RK gate always rejects full-check failures, including Psi failures.
+The former `RMHD_FAILSAFE_PCP_STRICT` compatibility policy has been removed.
+Criterion margins use `8*DBL_EPSILON`, with q and the Psi energy shift
+scaled by `max(1,abs(E))`. Primitive recovery itself has no criterion gate.
 
 The stage test also builds with `-DPARALLEL` using mpicc and `-ISrc/Parallel`;
 link `pcp_stage.c`, `pcp_nr.c` and `arrays.c` with function/data sections and

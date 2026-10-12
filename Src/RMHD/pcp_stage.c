@@ -55,18 +55,7 @@ static int PCPClassifyConservative(const double *u)
 {
   int n;
   NVAR_LOOP(n) if (!isfinite(u[n])) return 0;
-#if RMHD_FAILSAFE_PCP_STRICT == YES
   return RMHD_PCP_Check(u);
-#else
-  if (RMHD_PCP_Check(u)) return 1;
-  double E = u[ENG];
-#if RMHD_REDUCED_ENERGY == YES
-  E += u[RHO];
-#endif
-  /* Compatibility mode defers the remaining PCP conditions to recovery. */
-  return (isfinite(E) && u[RHO] > 0.0 && u[ENG] > 0.0
-      && E > hypot(u[RHO],hypot(u[MX1],hypot(u[MX2],u[MX3])))) ? 2 : 0;
-#endif
 }
 
 int RMHD_PCP_CheckConservative(const double *u)
@@ -80,13 +69,11 @@ int RMHD_PCP_CheckConservative(const double *u)
  * from AdvanceStep, since the following C2P contains MPI collectives. */
 int RMHD_PCP_CheckStage(Data *d, Grid *grid)
 {
-  int i,j,k, local_cells = 0, deferred_cells = 0;
-  int counts[2];
+  int i,j,k, local_cells = 0, rejected_cells;
   (void)grid;
   DOM_LOOP(k,j,i) {
     double *u = d->Uc[k][j][i];
-    /* 0: rejected, 1: strict pass, 2: deferred to native recovery.
-     * Reuse the strict result for diagnostics instead of evaluating it twice. */
+    /* Full criterion is mandatory before stage recovery. */
     int classification = PCPClassifyConservative(u);
     int cell_bad = classification == 0;
     if (d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) cell_bad = 1;
@@ -107,29 +94,24 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
       if (u[ENG] <= 0.0) d->flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;
       local_cells++;
     }
-#if RMHD_FAILSAFE_PCP_STRICT == NO
-    else if (classification == 2) deferred_cells++;
-#endif
   }
-  if (local_cells) WARNING(printLog("RMHD_STAGE_REJECT: step=%ld stage=%d rank=%d "
+  if (local_cells) { WARNING(printLog("RMHD_STAGE_REJECT: step=%ld stage=%d rank=%d "
                    "cells=%d dt=%.4g pre_c2p=YES\n",
-                   g_stepNumber,g_intStage,prank,local_cells,g_dt);)
-  counts[0] = local_cells;
-  counts[1] = deferred_cells;
+                   g_stepNumber,g_intStage,prank,local_cells,g_dt);) }
+  rejected_cells = local_cells;
 #ifdef PARALLEL
   {
-    int local_counts[2] = {local_cells,deferred_cells};
-    MPI_Allreduce(local_counts,counts,2,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
+    MPI_Allreduce(&local_cells,&rejected_cells,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
   }
 #endif
-  if (prank == 0 && (counts[0] || counts[1])){
+  if (prank == 0 && rejected_cells){
     WARNING(printLog("RMHD_STAGE_CHECK: step=%ld stage=%d rejected=%d "
-             "deferred_to_c2p=%d strict=%d\n",
-             g_stepNumber,g_intStage,counts[0],counts[1],RMHD_FAILSAFE_PCP_STRICT);
+             "strict=1\n",
+             g_stepNumber,g_intStage,rejected_cells);
             )
     }
 
-  return counts[0] != 0;
+  return rejected_cells != 0;
 }
 
 
@@ -267,6 +249,8 @@ void RMHD_PCP_EndStage(Data *d)
   g_rmhd_failsafe_low_order = outer_mode;
 }
 
+#endif /* PCP_FOFC: stage snapshots and local retry machinery */
+
 /* PressureFix may change energy and need not pass the strict PCP test at
  * floor pressure. Require a finite, usable state instead. Before recovery,
  * reject inputs PressureFix cannot repair without inventing density/B.
@@ -304,74 +288,138 @@ static int PCPRecoveryInvalid(Data *d, int recovered)
   return err;
 }
 
-/* Common exit for every RK stage. The final FOFC candidate (not the stage
- * snapshot) is handed to the configured recovery path after local retries
- * are exhausted.  FAILSAFE owns the failed candidate when enabled; with
- * FAILSAFE disabled, use the native RMHD PressureFix explicitly. */
-int RMHD_PCP_FinishStage(Data *d, int err, RBox *box, Grid *grid)
+/* Recover failed cells directly at floor pressure; ordinary C2P is only
+ * needed for healthy cells whose primitives are still from stage entry. */
+static int PCPRecoverAfterFOFC(Data *d)
 {
-  int i,j,k;
-  (void)box;
-  (void)grid;
-  if (err) {
-#if FAILSAFE == YES
-    /* Leave the final candidate and its diagnostic flags intact.  The caller
-     * returns this error to the full-step failsafe, which owns the fallback
-     * reconstruction and retry. */
-    g_rmhd_failsafe_low_order=outer_mode;
-    return err;
-#else
-    int pressure_fix_err = 0;
-
-    /* Give the ordinary mapper its normal opportunity first.  Its recovery
-     * path invokes PressureFix and also refreshes all primitive fields. */
-    DOM_LOOP(k,j,i)
-      d->flag[k][j][i] &= ~(FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL);
-    pressure_fix_err = ConsToPrim3D(d->Uc,d->Vc,d->flag,box,grid);
-    pressure_fix_err = PCPRecoveryInvalid(d,1) || pressure_fix_err;
-    if (!pressure_fix_err) {
-      RMHD_PCP_EndStage(d);
-      return 0;
-    }
-
-    /* The ordinary mapper can reject a state before reaching its pressure
-     * fix (for example after a non-finite intermediate).  Retry the failed
-     * cells explicitly before declaring the no-failsafe build fatal. */
-    pressure_fix_err = 0;
-    DOM_LOOP(k,j,i) {
-      if ((d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) ||
-          (stage_mask[k][j][i] & FLAG_LF)) {
-        int fix_err;
-        d->flag[k][j][i] &= ~(FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL);
-        d->flag[k][j][i] |= FLAG_NEGATIVE_PRESSURE;
-        fix_err = RMHD_PressureFix(d->Uc[k][j][i], d->Vc[k][j][i]);
-        if (fix_err) {
-          d->flag[k][j][i] |= FLAG_PRESSURE_FIX_FAIL | FLAG_CONS2PRIM_FAIL;
-          pressure_fix_err = 1;
+  static double **v;
+  int i,j,k,n,first,err=0;
+  if (v == NULL) v=ARRAY_2D(NX1_TOT,NVAR,double);
+  for(k=KBEG;k<=KEND;k++) for(j=JBEG;j<=JEND;j++) {
+    for(i=IBEG;i<=IEND;i++) NVAR_LOOP(n) v[i][n]=d->Vc[n][k][j][i];
+    for(i=IBEG;i<=IEND;) {
+      if ((d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL) ||
+          !RMHD_PCP_Check(d->Uc[k][j][i])) {
+        double *u=d->Uc[k][j][i];
+        d->flag[k][j][i]&=~(FLAG_CONS2PRIM_FAIL|FLAG_PRESSURE_FIX_FAIL);
+        if (RMHD_PressureFix(u,v[i])) {
+          d->flag[k][j][i]|=FLAG_CONS2PRIM_FAIL|FLAG_PRESSURE_FIX_FAIL;
+          err=1;
+        } else {
+#if NSCL > 0
+          NSCL_LOOP(n) v[i][n]=u[n]/u[RHO];
+#endif
+#ifdef GLM_MHD
+          v[i][PSI_GLM]=u[PSI_GLM];
+#endif
         }
+        i++;
+      } else {
+        first=i++;
+        while(i<=IEND && !(d->flag[k][j][i]&FLAG_CONS2PRIM_FAIL)
+              && RMHD_PCP_Check(d->Uc[k][j][i])) i++;
+        g_j=j;g_k=k;
+        if (ConsToPrim(d->Uc[k][j],v,first,i-1,d->flag[k][j])) err=1;
       }
     }
+    for(i=IBEG;i<=IEND;i++) NVAR_LOOP(n) d->Vc[n][k][j][i]=v[i][n];
+  }
 #ifdef PARALLEL
-    {int local=pressure_fix_err;
-     MPI_Allreduce(&local,&pressure_fix_err,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);}
+  {int local=err;MPI_Allreduce(&local,&err,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);}
 #endif
+  return err;
+}
+
+/* Try direct PressureFix on the current candidate before optional FOFC.
+ * Failure restores U/V so local or full-step retries use the original
+ * rejected candidate and its failure seeds.
+ * Recovery at floor pressure uses finite/physical checks, not G_epsilon. */
+int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
+{
+  int i,j,k,n;
+#if PCP_FOFC != YES
+  int outer_mode=g_rmhd_failsafe_low_order;
+#endif
+  (void)box;
+  if (err) {
+    int pressure_fix_err = 0;
+    static Data_Arr rejected_u, rejected_v;
+    static uint16_t ***rejected_flags;
+    long changed=0, global_changed;
+    double added=0.0, max_relative=0.0, global_added, global_relative;
+
+    /* Do not let ordinary mapper floors invent density or mask NaNs.
+     * All ranks make this decision before entering its collectives. */
+    if (PCPRecoveryInvalid(d,0)) {
+      g_rmhd_failsafe_low_order=outer_mode;
+      return err;
+    }
+    if (rejected_u == NULL) {
+      rejected_u=ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
+      rejected_v=ARRAY_4D(NVAR,NX3_TOT,NX2_TOT,NX1_TOT,double);
+      rejected_flags=ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
+    }
+    DOM_LOOP(k,j,i) {
+      NVAR_LOOP(n) {
+        rejected_u[k][j][i][n]=d->Uc[k][j][i][n];
+        rejected_v[n][k][j][i]=d->Vc[n][k][j][i];
+      }
+      rejected_flags[k][j][i]=d->flag[k][j][i];
+    }
+
+    pressure_fix_err = PCPRecoverAfterFOFC(d);
     pressure_fix_err = PCPRecoveryInvalid(d,1) || pressure_fix_err;
-    printLog("PCP_STAGE recovery: step=%ld stage=%d pressure_fix=%s\n",
-             g_stepNumber,g_intStage,pressure_fix_err ? "FAILED" : "accepted");
+    if (!pressure_fix_err) DOM_LOOP(k,j,i) {
+      double before=rejected_u[k][j][i][ENG];
+      double delta=d->Uc[k][j][i][ENG]-before;
+      if (delta != 0.0) {
+        changed++;
+        added+=delta*grid->dV[k][j][i];
+        max_relative=fmax(max_relative,fabs(delta)/fmax(fabs(before),1.e-300));
+      }
+    }
+    global_changed=changed; global_added=added; global_relative=max_relative;
+#ifdef PARALLEL
+    MPI_Allreduce(&changed,&global_changed,1,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
+    MPI_Allreduce(&added,&global_added,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+    MPI_Allreduce(&max_relative,&global_relative,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
+#endif
+    // printLog("PCP_STAGE recovery: step=%ld stage=%d pressure_fix=%s "
+    //          "energy_changed=%ld dE_volume=%.17g max_relative=%.17g\n",
+    //          g_stepNumber,g_intStage,pressure_fix_err ? "FAILED" : "accepted",
+    //          global_changed,global_added,global_relative);
     if (!pressure_fix_err) {
-      RMHD_PCP_EndStage(d);
       return 0;
     }
 
+    /* Restore the rejected candidate for the outer fallback/dump. Keep
+     * original FOFC seeds as well as newly observed recovery failures. */
+    DOM_LOOP(k,j,i) {
+      NVAR_LOOP(n) {
+        d->Uc[k][j][i][n]=rejected_u[k][j][i][n];
+        d->Vc[n][k][j][i]=rejected_v[n][k][j][i];
+      }
+      d->flag[k][j][i] |= rejected_flags[k][j][i];
+    }
     g_rmhd_failsafe_low_order=outer_mode;
-    printLog("! PCP_STAGE: PressureFix failed with FAILSAFE=NO; "
-             "step=%ld stage=%d dt=%.17g\n",g_stepNumber,g_intStage,g_dt);
-    LogFileFlush();
-    QUIT_PLUTO(1);
     return pressure_fix_err;
-#endif
   }
-  RMHD_PCP_EndStage(d);
   return 0;
 }
+
+/* Complete only after PressureFix and optional FOFC have been attempted. */
+int RMHD_PCP_FinishStage(Data *d, int err, RBox *box, Grid *grid)
+{
+  (void)box; (void)grid;
+  if (err) {
+#if FAILSAFE == NO
+    printLog("! PCP_STAGE: recovery exhausted with FAILSAFE=NO\n");
+    LogFileFlush(); QUIT_PLUTO(1);
 #endif
+    return err;
+  }
+#if PCP_FOFC == YES
+  RMHD_PCP_EndStage(d);
+#endif
+  return 0;
+}

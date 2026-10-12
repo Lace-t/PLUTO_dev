@@ -66,9 +66,6 @@ int main(int argc, char **argv)
     memcpy(saved,d.Uc[3][3][3],sizeof(saved));
     {
       int rejected = test!=0;
-#if RMHD_FAILSAFE_PCP_STRICT == NO
-      if (test==3) rejected=0; /* explicitly defer Psi failure to native C2P */
-#endif
 #ifdef COUNT_PCP_CHECKS
       pcp_checks=0;
 #endif
