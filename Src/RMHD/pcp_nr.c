@@ -33,7 +33,7 @@ static int PCPFinite (double x)
 
 /* Wu et al. G_0 admissibility test.  The small relative margins prevent a
    state on a floating-point boundary from being passed to the NR solver. */
-static int PCPCheck (const double *u, int q_only)
+static int PCPCheck (const double *u)
 {
   double D, E, m2, B2, tau, phi, rad, lhs, rhs, psi_d, psi_scale;
   long double psi;
@@ -72,8 +72,6 @@ static int PCPCheck (const double *u, int q_only)
   } else {
     return 0;
   }
-
-  if (q_only) return 1;
 
   a = E*E - D*D - m2;
   if (!PCPFinite(a) || a < 0.0) return 0;
@@ -122,7 +120,7 @@ static int PCPCheck (const double *u, int q_only)
 
 int RMHD_PCP_Check (const double *u)
 {
-  return PCPCheck(u, 0);
+  return PCPCheck(u);
 }
 
 /* Scale only (D,m,E), keeping the face magnetic field untouched.  This is
@@ -130,7 +128,7 @@ int RMHD_PCP_Check (const double *u)
 int RMHD_PCP_Limit (const double *u0, double *u)
 {
   int k, n;
-  double theta, lo, hi, mid, epsD, d1, d2;
+  double theta, lo, hi, mid, epsD;
   double cand[NVAR], anchor[NVAR], stage[NVAR];
 
   /* Return values: -1 = failed (input unchanged), 0 = unchanged, 1 = limited. */
@@ -148,8 +146,8 @@ int RMHD_PCP_Limit (const double *u0, double *u)
   anchor[BX3] = u[BX3];
   if (!RMHD_PCP_Check(anchor)) return -1;
 
-  /* Wu stages, adapted to CT: B is fixed at every stage.  Stage 1 changes
-     only D; stages 2 and 3 use one common theta for (D,m,E). */
+  /* Adapted to CT: first enforce the density floor at fixed full energy,
+     then enforce q and Psi together along one fixed-B fluid-state segment. */
   for (n = 0; n < NVAR; n++) cand[n] = u[n];
   epsD = nextafter(PCP_ABS_FLOOR, INFINITY);
   if (u[RHO] < epsD) {
@@ -162,38 +160,17 @@ int RMHD_PCP_Limit (const double *u0, double *u)
   /* ENG stores E-D: changing only D must leave the full energy unchanged. */
   cand[ENG] = u[ENG] + (u[RHO] - cand[RHO]);
 #endif
-  d1 = cand[RHO];
   memcpy(stage, cand, sizeof(stage));
 
-  /* Stage 2: q constraint, with D,m,E scaled together from the anchor. */
-  if (!PCPCheck(cand, 1)) {
-    lo = 0.0; hi = 1.0;
-    for (k = 0; k < PCP_LIMIT_ITER; k++) {
-      mid = 0.5*(lo+hi);
-      cand[RHO] = anchor[RHO] + mid*(d1-anchor[RHO]);
-      cand[MX1] = anchor[MX1] + mid*(u[MX1]-anchor[MX1]);
-      cand[MX2] = anchor[MX2] + mid*(u[MX2]-anchor[MX2]);
-      cand[MX3] = anchor[MX3] + mid*(u[MX3]-anchor[MX3]);
-      cand[ENG] = anchor[ENG] + mid*(stage[ENG]-anchor[ENG]);
-      if (PCPCheck(cand, 1)) lo=mid; else hi=mid;
-    }
-    theta=lo;
-    cand[RHO]=anchor[RHO]+theta*(d1-anchor[RHO]);
-    cand[MX1]=anchor[MX1]+theta*(u[MX1]-anchor[MX1]);
-    cand[MX2]=anchor[MX2]+theta*(u[MX2]-anchor[MX2]);
-    cand[MX3]=anchor[MX3]+theta*(u[MX3]-anchor[MX3]);
-    cand[ENG]=anchor[ENG]+theta*(stage[ENG]-anchor[ENG]);
-  }
-  d2 = cand[RHO];
-  memcpy(stage, cand, sizeof(stage));
-
-  /* Stage 3: Psi constraint, again with one common theta for fluid fields. */
+  /* The former q and Psi stages scaled the same fields toward the same
+     anchor.  Combine them into one search using the full checker, which
+     rejects failed q states before evaluating Psi.  Keep the admissible
+     endpoint; neither B nor the other unscaled fields change. */
   if (!RMHD_PCP_Check(cand)) {
     lo=0.0; hi=1.0;
     for (k=0; k<PCP_LIMIT_ITER; k++) {
       mid=0.5*(lo+hi);
-      for (n=0; n<NVAR; n++) cand[n]=u[n];
-      cand[RHO]=anchor[RHO]+mid*(d2-anchor[RHO]);
+      cand[RHO]=anchor[RHO]+mid*(stage[RHO]-anchor[RHO]);
       cand[MX1]=anchor[MX1]+mid*(stage[MX1]-anchor[MX1]);
       cand[MX2]=anchor[MX2]+mid*(stage[MX2]-anchor[MX2]);
       cand[MX3]=anchor[MX3]+mid*(stage[MX3]-anchor[MX3]);
@@ -201,8 +178,7 @@ int RMHD_PCP_Limit (const double *u0, double *u)
       if (RMHD_PCP_Check(cand)) lo=mid; else hi=mid;
     }
     theta=lo;
-    for (n=0; n<NVAR; n++) cand[n]=u[n];
-    cand[RHO]=anchor[RHO]+theta*(d2-anchor[RHO]);
+    cand[RHO]=anchor[RHO]+theta*(stage[RHO]-anchor[RHO]);
     cand[MX1]=anchor[MX1]+theta*(stage[MX1]-anchor[MX1]);
     cand[MX2]=anchor[MX2]+theta*(stage[MX2]-anchor[MX2]);
     cand[MX3]=anchor[MX3]+theta*(stage[MX3]-anchor[MX3]);

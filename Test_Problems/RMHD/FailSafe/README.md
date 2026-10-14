@@ -1,5 +1,12 @@
 # RMHD FailSafe regression
 
+The fixed-field reconstruction limiter combines the q and Psi contractions
+into one bisection with the full admissibility checker, after density
+preprocessing. `bash Test_Problems/RMHD/FailSafe/test_pcp_limiter.sh` checks
+independent rest-state energy bounds, density/full-energy consistency,
+unchanged magnetic components, common fluid contraction, atomic rejection,
+and 6000 randomized states for each energy convention under ASan/UBSan.
+
 Communication/memory optimization: a FOFC retry now uses one Allreduce for
 both the bad-cell decision and cumulative-mask statistics, followed by one
 exchange of the final flags. Received ghost LF bits are tracked for cleanup,
