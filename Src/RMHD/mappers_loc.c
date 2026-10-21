@@ -158,7 +158,7 @@ int ConsToPrimLoc (double *u, double *v, uint16_t *flag)
   // method = PCP_NR_SOLVE;
   // #else
   method = ENERGY_SOLVE;
-  // #endif
+  //#endif
 
   #if ENTROPY_SWITCH
   if (*flag & FLAG_ENTROPY) method = ENTROPY_SOLVE;

@@ -336,6 +336,7 @@ static int PCPRecoverAfterFOFC(Data *d)
  * Recovery at floor pressure uses finite/physical checks, not G_epsilon. */
 int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
 {
+#if RMHD_PCP_PRESSURE_FIX == YES
   int i,j,k,n;
 #if PCP_FOFC != YES
   int outer_mode=g_rmhd_failsafe_low_order;
@@ -405,6 +406,10 @@ int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
     return pressure_fix_err;
   }
   return 0;
+#else
+  (void)d; (void)box; (void)grid;
+  return err;
+#endif
 }
 
 /* Complete only after PressureFix and optional FOFC have been attempted. */

@@ -196,6 +196,12 @@ enum KWAVES {
   #define PCP_FOFC NO
 #endif
 
+/* Try PressureFix after a PCP criterion rejects the candidate state.
+   Set to NO to bypass this recovery and use the configured fallback. */
+#ifndef RMHD_PCP_PRESSURE_FIX
+  #define RMHD_PCP_PRESSURE_FIX YES
+#endif
+
 /* Separate the read-only native recovery from sparse exceptional repairs.
  * NO retains the legacy row mapper for controlled performance comparisons. */
 #ifndef RMHD_PCP_SPLIT_RECOVERY
