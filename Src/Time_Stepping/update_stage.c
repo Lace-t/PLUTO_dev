@@ -233,10 +233,36 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
        2c. Solve Riemann problem
        ---------------------------------------------------- */
 
+#if (PHYSICS == RMHD) && (PCP_FOFC == YES)
+      if (RMHD_PCP_UseFluxCache()) {
+        for ((*ip) = nbeg-1; (*ip) <= nend; (*ip)++) {
+          int fk, fj, fi;
+          if (g_dir == IDIR) { fk=g_k; fj=g_j; fi=*ip; }
+          else if (g_dir == JDIR) { fk=g_k; fj=*ip; fi=g_i; }
+          else { fk=*ip; fj=g_j; fi=g_i; }
+          RMHD_PCP_LoadSweepFlux(g_dir,fk,fj,fi,&sweep,Dts->cmax,*ip);
+        }
+      } else {
+        d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
+      }
+      if (!RMHD_PCP_UseFluxCache()) {
+        for ((*ip) = nbeg-1; (*ip) <= nend; (*ip)++) {
+          int fk, fj, fi;
+          if (g_dir == IDIR) { fk=g_k; fj=g_j; fi=*ip; }
+          else if (g_dir == JDIR) { fk=g_k; fj=*ip; fi=g_i; }
+          else { fk=*ip; fj=g_j; fi=g_i; }
+          RMHD_PCP_CacheSweepFlux(g_dir,fk,fj,fi,&sweep,Dts->cmax,*ip);
+        }
+      }
+      #if PHYSICS == RMHD
+      RMHD_FailSafe_CorrectFluxes (&sweep, nbeg-1, nend, Dts->cmax, grid);
+      #endif
+#else
       d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
       #if PHYSICS == RMHD
       RMHD_FailSafe_CorrectFluxes (&sweep, nbeg-1, nend, Dts->cmax, grid);
       #endif
+#endif
       
       #if NSCL > 0
       AdvectFlux (&sweep, nbeg-1, nend, grid);

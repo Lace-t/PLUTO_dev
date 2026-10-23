@@ -214,6 +214,7 @@ void   SwapEndian (void *, const int);
 void UnsetJetDomain (const Data *, int, Grid *);
 void UpdateStage(Data *, Data_Arr, Data_Arr, double **, double, timeStep *, Grid *);
 void UserDefBoundary (const Data *, RBox *, int,  Grid *); 
+void UserDefCFloors (Data *, Grid *);
 
 const char *VarName (int nv, int mode);
 void VectorPotentialDiff (double *, Data *, int, int, int, Grid *);

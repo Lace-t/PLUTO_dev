@@ -5,7 +5,14 @@
 #include <assert.h>
 #include <stdarg.h>
 static int calls[4], mode, target, maps, recoveries;
+void UserDefCFloors(Data *d, Grid *grid)
+{
+  (void)grid;
+  if (mode==1 && g_rmhd_failsafe_low_order)
+    d->flag[5][5][8]&=~FLAG_CONS2PRIM_FAIL;
+}
 void printLog(const char *fmt, ...) { va_list a; va_start(a,fmt); vprintf(fmt,a); va_end(a); }
+void Where(int i, Grid *grid) {(void)i;(void)grid;}
 void print(const char *fmt, ...) {(void)fmt;}
 void PlutoError(int b,char *s) {if(b){puts(s);abort();}}
 void LogFileFlush(void){}
@@ -64,6 +71,9 @@ void UpdateStage(Data *d,Data_Arr u,Data_Arr b,double **f,double dt,timeStep *Dt
    if(mode==7)u[5][5][8][RHO]=-100;
  }
 }
+int RMHD_PressureFix(double *u,double *v) {(void)u;(void)v;return 1;}
+int ConsToPrim(double **u,double **v,int beg,int end,uint16_t *flags)
+{(void)u;(void)v;(void)beg;(void)end;(void)flags;return 1;}
 void CT_AverageStaggeredFields(const Data *d,int correct,RBox *b,Grid *g)
 {
  (void)correct;(void)b;(void)g;
@@ -76,12 +86,14 @@ int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr u,Data_Arr v,uint16_t ***flags,
  (void)u;(void)b;(void)g;
  maps++;
  DOM_LOOP(k,j,i) NVAR_LOOP(n) v[n][k][j][i]=n==RHO?2:0;
- if(g_intStage==target && calls[g_intStage]==2 && mode==1 && prank==0) {
+ if(g_intStage==target && g_rmhd_failsafe_low_order && mode==1 && prank==0) {
    flags[5][5][8]|=FLAG_CONS2PRIM_FAIL;bad=1;
  }
 #ifdef PARALLEL
  int global;MPI_Allreduce(&bad,&global,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);bad=global;
 #endif
+ if(g_intStage==target && mode==1 && calls[g_intStage]>1 && !bad)
+   flags[5][5][8]&=~FLAG_CONS2PRIM_FAIL;
  return bad;
 }
 int ConsToPrim3D(Data_Arr u,Data_Arr v,uint16_t ***flags,RBox *b,Grid *g)
@@ -118,8 +130,10 @@ int main(int argc,char **argv)
  IBEG=JBEG=KBEG=3;IEND=JEND=KEND=8;g_dt=.25;g_gamma=5.0/3;
  d.Uc=ARRAY_4D(12,12,12,NVAR,double);d.Vc=ARRAY_4D(NVAR,12,12,12,double);
  d.Vs=ARRAY_4D(3,12,12,12,double);d.flag=ARRAY_3D(12,12,12,uint16_t);
+ grid.dV=ARRAY_3D(12,12,12,double);
  ts.cmax=ARRAY_1D(12,double);for(i=0;i<12;i++)ts.cmax[i]=10;
  TOT_LOOP(k,j,i){
+   grid.dV[k][j][i]=1.0;
    NVAR_LOOP(n){d.Uc[k][j][i][n]=n==RHO?1:n==ENG?3:0;d.Vc[n][k][j][i]=n==RHO?1:0;}
    DIM_LOOP(n)d.Vs[n][k][j][i]=0;d.flag[k][j][i]=0;
  }

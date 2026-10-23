@@ -198,8 +198,8 @@ enum KWAVES {
 
 /* Try PressureFix after a PCP criterion rejects the candidate state.
    Set to NO to bypass this recovery and use the configured fallback. */
-#ifndef RMHD_PCP_PRESSURE_FIX
-  #define RMHD_PCP_PRESSURE_FIX YES
+#ifndef PCP_PRESSURE_FIX
+  #define PCP_PRESSURE_FIX YES
 #endif
 
 /* Separate the read-only native recovery from sparse exceptional repairs.
@@ -299,10 +299,14 @@ void RMHD_FailSafe_CorrectFluxes (const Sweep *, int, int, double *, Grid *);
 void RMHD_LocalFallbackFlag(Data *, uint16_t ***);
 void RMHD_PCP_BeginStage(Data *, timeStep *);
 int RMHD_PCP_RetryStage(Data *, timeStep *);
+int RMHD_PCP_UseFluxCache(void);
+void RMHD_PCP_CacheSweepFlux(int, int, int, int, const Sweep *, const double *, int);
+void RMHD_PCP_LoadSweepFlux(int, int, int, int, Sweep *, double *, int);
+int RMHD_PCP_RunStage(Data *, timeStep *, double, Data_Arr, double ****,
+                      int, double, double, RBox *, Grid *);
 void RMHD_PCP_EndStage(Data *);
 int RMHD_PCP_FinishStage(Data *, int, RBox *, Grid *);
 int RMHD_PCP_TryPressureFix(Data *, int, RBox *, Grid *);
-int RMHD_PCP_CheckConservative(const double *);
 int RMHD_PCP_ConsToPrim3D_CheckModified(Data_Arr, Data_Arr, uint16_t ***, RBox *, Grid *);
 int RMHD_PCP_ConsToPrimRow(double **, double **, int, int, uint16_t *, int *, int *);
 int RMHD_PCP_CheckStage (Data *, Grid *);

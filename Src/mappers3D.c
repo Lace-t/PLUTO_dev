@@ -116,7 +116,7 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
        * Keep the exact post-repair PCP policy without normal-cell copies. */
       for (m=0; m<nchanged; m++) {
         i=changed[m];
-        if (!RMHD_PCP_CheckConservative(U[k][j][i])) {
+        if (!RMHD_PCP_Check(U[k][j][i])) {
           flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
           if (U[k][j][i][RHO] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_DENSITY;
           if (U[k][j][i][ENG] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;
@@ -148,7 +148,7 @@ static int ConsToPrim3DImpl(Data_Arr U, Data_Arr V, uint16_t ***flag,
       if (check_modified) {
 #if RMHD_PCP_SPLIT_RECOVERY != YES
         if (memcmp(u[i],U[k][j][i],NVAR*sizeof(double)) != 0
-            && !RMHD_PCP_CheckConservative(U[k][j][i])) {
+            && !RMHD_PCP_Check(U[k][j][i])) {
           flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
           if (U[k][j][i][RHO] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_DENSITY;
           if (U[k][j][i][ENG] <= 0.0) flag[k][j][i] |= FLAG_NEGATIVE_ENERGY;

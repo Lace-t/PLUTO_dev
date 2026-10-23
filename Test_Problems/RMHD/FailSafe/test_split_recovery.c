@@ -134,7 +134,7 @@ int main(void)
      * across scratch reuse. Compare flags/U on all cells and V on successes. */
     expected_error=ConsToPrim(a,va,0,row-1,fa);
     for(i=0;i<row;i++) {
-      if(memcmp(initial[i],a[i],NVAR*sizeof(double)) && !RMHD_PCP_CheckConservative(a[i])) {
+      if(memcmp(initial[i],a[i],NVAR*sizeof(double)) && !RMHD_PCP_Check(a[i])) {
         fa[i]|=FLAG_CONS2PRIM_FAIL;
         if(a[i][RHO]<=0)fa[i]|=FLAG_NEGATIVE_DENSITY;
         if(a[i][ENG]<=0)fa[i]|=FLAG_NEGATIVE_ENERGY;

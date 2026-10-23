@@ -7,6 +7,26 @@
 
 int g_pcp_low_order = 0;
 
+/* User override point for conservative floors before stage PCP checks. */
+#if defined(__GNUC__)
+__attribute__((weak))
+#endif
+void UserDefCFloors(Data *d, Grid *grid)
+{
+  (void)d;
+  (void)grid;
+}
+
+static int stage_pass;
+#if PCP_FOFC == YES
+static Data_Arr stage_u;
+static int PCPStageCellAffected(int k, int j, int i);
+static Data_Arr stage_candidate_u;
+#ifdef STAGGERED_MHD
+static Data_Arr stage_candidate_b;
+#endif
+#endif
+
 /* Construct the fluid states used by a failsafe retry after States() has
  * allocated its ordinary sweep storage.  Normal B is copied once from the
  * staggered face shared by both sides of each interface.  This is the
@@ -50,33 +70,44 @@ void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
   }
 }
 
-/* Shared acceptance policy for stage input and mapper-modified states. */
-static int PCPClassifyConservative(const double *u)
-{
-  int n;
-  NVAR_LOOP(n) if (!isfinite(u[n])) return 0;
-  return RMHD_PCP_Check(u);
-}
-
-int RMHD_PCP_CheckConservative(const double *u)
-{
-  return PCPClassifyConservative(u) != 0;
-}
-
 /* Check the actual RK average after its RK combination and CT averaging,
  * before the mapper can change U. No primitive recovery or state repair is
  * performed here. All ranks must make the same decision before returning
  * from AdvanceStep, since the following C2P contains MPI collectives. */
 int RMHD_PCP_CheckStage(Data *d, Grid *grid)
 {
-  int i,j,k, local_cells = 0, rejected_cells;
+  int i,j,k,n, local_cells = 0, rejected_cells;
   (void)grid;
+#if PCP_FOFC == YES
+  if (stage_u != NULL && stage_pass == 0) {
+    DOM_LOOP(k,j,i) {
+      memcpy(stage_candidate_u[k][j][i],d->Uc[k][j][i],NVAR*sizeof(double));
+#ifdef STAGGERED_MHD
+      DIM_LOOP(n) stage_candidate_b[n][k][j][i]=d->Vs[n][k][j][i];
+#endif
+    }
+  } else if (stage_u != NULL) {
+#ifndef STAGGERED_MHD
+    DOM_LOOP(k,j,i) if (!PCPStageCellAffected(k,j,i))
+      memcpy(d->Uc[k][j][i],stage_candidate_u[k][j][i],NVAR*sizeof(double));
+#endif
+  }
+#endif
   DOM_LOOP(k,j,i) {
+#if PCP_FOFC == YES
+    /* Once FOFC changes local fluxes, only this stencil can have a new
+     * conservative candidate. The first candidate still needs a full scan. */
+    if (stage_u != NULL && stage_pass > 0 && !PCPStageCellAffected(k,j,i)) {
+#ifndef STAGGERED_MHD
+      continue;
+#else
+      /* CT retries rebuild the full stage without a cached edge/flux update. */
+#endif
+    }
+#endif
     double *u = d->Uc[k][j][i];
-    /* Full criterion is mandatory before stage recovery. */
-    int classification = PCPClassifyConservative(u);
-    int cell_bad = classification == 0;
-    if (d->flag[k][j][i] & FLAG_CONS2PRIM_FAIL) cell_bad = 1;
+    /* RMHD_PCP_Check is the sole conservative PCP criterion. */
+    int cell_bad = !RMHD_PCP_Check(u);
 #ifdef STAGGERED_MHD
     /* Both faces bounding the active cell must be finite. */
     DIM_EXPAND(
@@ -129,11 +160,96 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
 #error "Local PCP stages: this integration path is unsupported"
 #endif
 
-static Data_Arr stage_u, stage_v, stage_b;
+static Data_Arr stage_v, stage_b;
 static uint16_t ***stage_flags, ***stage_mask;
 static double *stage_cmax;
 static timeStep stage_dts;
-static int stage_pass, outer_mode;
+static int outer_mode;
+static Data_Arr stage_flux[DIMENSIONS];
+static double ***stage_press[DIMENSIONS];
+static double ***stage_speed[DIMENSIONS];
+
+/* Store one face's high-order flux and pressure term by global-in-rank
+ * coordinates. The cache is stage-local and reused only on FOFC passes. */
+static void PCPStageFluxAddress(int dir, int k, int j, int i,
+                                int *fk, int *fj, int *fi)
+{
+  if (dir == IDIR) { *fk=k; *fj=j; *fi=i; }
+  else if (dir == JDIR) { *fk=k; *fj=j; *fi=i; }
+  else { *fk=k; *fj=j; *fi=i; }
+}
+
+int RMHD_PCP_UseFluxCache(void)
+{
+#ifdef STAGGERED_MHD
+  return 0;
+#else
+  return stage_pass > 0;
+#endif
+}
+
+void RMHD_PCP_CacheSweepFlux(int dir, int k, int j, int i,
+                             const Sweep *s, const double *cmax, int q)
+{
+  int fk,fj,fi,n;
+  if (stage_pass != 0 || dir < 0 || dir >= DIMENSIONS ||
+      stage_flux[dir] == NULL) return;
+  PCPStageFluxAddress(dir,k,j,i,&fk,&fj,&fi);
+  NVAR_LOOP(n) stage_flux[dir][fk][fj][fi][n]=s->flux[q][n];
+  stage_press[dir][fk][fj][fi]=s->press[q];
+  stage_speed[dir][fk][fj][fi]=cmax[q];
+}
+
+void RMHD_PCP_LoadSweepFlux(int dir, int k, int j, int i,
+                            Sweep *s, double *cmax, int q)
+{
+  int fk,fj,fi,n;
+  if (dir < 0 || dir >= DIMENSIONS || stage_flux[dir] == NULL) return;
+  PCPStageFluxAddress(dir,k,j,i,&fk,&fj,&fi);
+  NVAR_LOOP(n) s->flux[q][n]=stage_flux[dir][fk][fj][fi][n];
+  s->press[q]=stage_press[dir][fk][fj][fi];
+  /* RetryStage restores the stage-entry CFL storage, which may still be
+   * uninitialized. Every replayed face needs its original signal speed. */
+  cmax[q]=stage_speed[dir][fk][fj][fi];
+}
+
+/* Corrected face fluxes affect face-neighbor cell updates. In CT, the
+ * associated edge EMFs also update nearby face fields, so include the full
+ * one-cell Chebyshev neighborhood as a conservative dependency stencil. */
+static int PCPStageCellAffected(int k, int j, int i)
+{
+  int di,dj,dk;
+#ifdef STAGGERED_MHD
+  for (dk=-1; dk<=1; dk++) {
+    if (DIMENSIONS < 3 && dk != 0) continue;
+    if (k+dk < 0 || k+dk >= NX3_TOT) continue;
+    for (dj=-1; dj<=1; dj++) {
+      if (DIMENSIONS < 2 && dj != 0) continue;
+      if (j+dj < 0 || j+dj >= NX2_TOT) continue;
+      for (di=-1; di<=1; di++) {
+        if (i+di < 0 || i+di >= NX1_TOT) continue;
+        if (stage_mask[k+dk][j+dj][i+di] & FLAG_LF) return 1;
+      }
+    }
+  }
+#else
+  if (stage_mask[k][j][i] & FLAG_LF) return 1;
+  for (di=-1; di<=1; di+=2)
+    if (i+di >= 0 && i+di < NX1_TOT &&
+        (stage_mask[k][j][i+di] & FLAG_LF)) return 1;
+#if DIMENSIONS >= 2
+  for (dj=-1; dj<=1; dj+=2)
+    if (j+dj >= 0 && j+dj < NX2_TOT &&
+        (stage_mask[k][j+dj][i] & FLAG_LF)) return 1;
+#endif
+#if DIMENSIONS == 3
+  for (dk=-1; dk<=1; dk+=2)
+    if (k+dk >= 0 && k+dk < NX3_TOT &&
+        (stage_mask[k+dk][j][i] & FLAG_LF)) return 1;
+#endif
+#endif
+  return 0;
+}
 
 /* Called after Boundary/initial P2C, once per RK stage. V must be saved:
  * CT_RMHD_CONSISTENT and the mapper can both modify it on rejected trials. */
@@ -142,10 +258,21 @@ void RMHD_PCP_BeginStage(Data *d, timeStep *Dts)
   int i,j,k,n;
   if (stage_u == NULL) {
     stage_u = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
+    stage_candidate_u = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
+#ifdef STAGGERED_MHD
+    stage_candidate_b = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
+#endif
     stage_v = ARRAY_4D(NVAR,NX3_TOT,NX2_TOT,NX1_TOT,double);
     stage_flags = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
     stage_mask = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
     stage_cmax = ARRAY_1D(NMAX_POINT,double);
+    for (n=0; n<DIMENSIONS; n++) {
+#ifndef STAGGERED_MHD
+      stage_flux[n] = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
+      stage_press[n] = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,double);
+      stage_speed[n] = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,double);
+#endif
+    }
 #ifdef STAGGERED_MHD
     stage_b = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
 #endif
@@ -228,6 +355,71 @@ int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
   WARNING(printLog("PCP_STAGE retry: step=%ld stage=%d pass=%d bad=%ld fofc=%ld\n",
            g_stepNumber,g_intStage,stage_pass,total[0],total[1]);)
   return 1;
+}
+
+/* Own the FOFC retry loop so the RK driver does not rerun its whole stage.
+ * The cache path replays the first high-order fluxes and only invokes LF on
+ * interfaces touching the cumulative failure mask. */
+int RMHD_PCP_RunStage(Data *d, timeStep *Dts, double dt,
+                      Data_Arr Ubase, double ****Bbase, int combination,
+                      double w0_stage, double wc_stage, RBox *box, Grid *grid)
+{
+  int i,j,k,n,err;
+  RMHD_PCP_BeginStage(d,Dts);
+  do {
+    UpdateStage(d,d->Uc,d->Vs,NULL,dt,Dts,grid);
+#ifdef STAGGERED_MHD
+    /* The predictor also needs CT synchronization and primitive recovery. */
+    if (combination == 0) CT_AverageStaggeredFields(d,1,box,grid);
+#endif
+    if (combination == 1) {
+      DOM_LOOP(k,j,i) NVAR_LOOP(n)
+        d->Uc[k][j][i][n] = w0_stage*Ubase[k][j][i][n]
+                          + wc_stage*d->Uc[k][j][i][n];
+#ifdef STAGGERED_MHD
+      DIM_LOOP(n) TOT_LOOP(k,j,i)
+        d->Vs[n][k][j][i] = w0_stage*Bbase[n][k][j][i]
+                          + wc_stage*d->Vs[n][k][j][i];
+      CT_AverageStaggeredFields(d,1,box,grid);
+#endif
+    } else if (combination == 2) {
+      DOM_LOOP(k,j,i) NVAR_LOOP(n)
+        d->Uc[k][j][i][n] = (Ubase[k][j][i][n]
+                           + 2.0*d->Uc[k][j][i][n])/3.0;
+#ifdef STAGGERED_MHD
+      DIM_LOOP(n) TOT_LOOP(k,j,i)
+        d->Vs[n][k][j][i] = (Bbase[n][k][j][i]
+                           + 2.0*d->Vs[n][k][j][i])/3.0;
+      CT_AverageStaggeredFields(d,1,box,grid);
+#endif
+    }
+    /* The cache contains the first fully combined RK candidate. A retry
+     * replays cached high-order fluxes plus local LF replacements; retain
+     * the bitwise first candidate outside the flux-dependency stencil. */
+    if (stage_pass > 0
+#ifndef STAGGERED_MHD
+        ) DOM_LOOP(k,j,i)
+#else
+        && RMHD_PCP_UseFluxCache()) DOM_LOOP(k,j,i)
+#endif
+      if (!PCPStageCellAffected(k,j,i))
+        memcpy(d->Uc[k][j][i],stage_candidate_u[k][j][i],NVAR*sizeof(double));
+#ifdef STAGGERED_MHD
+    if (stage_pass > 0 && RMHD_PCP_UseFluxCache()) {
+      /* CT faces are restored with the matching candidate cell stencil. */
+      for (n=0;n<DIMENSIONS;n++) TOT_LOOP(k,j,i)
+        if (!PCPStageCellAffected(k,j,i)) d->Vs[n][k][j][i]=stage_candidate_b[n][k][j][i];
+    }
+#endif
+    UserDefCFloors(d,grid);
+    err=RMHD_PCP_CheckStage(d,grid);
+#if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
+    if (!err)
+      err=RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,box,grid);
+#endif
+  } while (err && RMHD_PCP_RetryStage(d,Dts));
+  if (err) err=RMHD_PCP_TryPressureFix(d,err,box,grid);
+  return RMHD_PCP_FinishStage(d,err,box,grid);
 }
 
 void RMHD_PCP_EndStage(Data *d)
@@ -330,17 +522,15 @@ static int PCPRecoverAfterFOFC(Data *d)
   return err;
 }
 
-/* Try direct PressureFix on the current candidate before optional FOFC.
- * Failure restores U/V so local or full-step retries use the original
+/* Try PressureFix after local FOFC retries are exhausted.
+ * Failure restores U/V so the outer full-step failsafe sees the original
  * rejected candidate and its failure seeds.
  * Recovery at floor pressure uses finite/physical checks, not G_epsilon. */
 int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
 {
-#if RMHD_PCP_PRESSURE_FIX == YES
+#if PCP_PRESSURE_FIX == YES
   int i,j,k,n;
-#if PCP_FOFC != YES
   int outer_mode=g_rmhd_failsafe_low_order;
-#endif
   (void)box;
   if (err) {
     int pressure_fix_err = 0;
@@ -412,7 +602,7 @@ int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
 #endif
 }
 
-/* Complete only after PressureFix and optional FOFC have been attempted. */
+/* Complete after FOFC and the optional post-FOFC PressureFix attempt. */
 int RMHD_PCP_FinishStage(Data *d, int err, RBox *box, Grid *grid)
 {
   (void)box; (void)grid;

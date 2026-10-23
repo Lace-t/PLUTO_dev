@@ -71,7 +71,7 @@ int main(int argc, char **argv)
 #endif
       assert(RMHD_PCP_CheckStage(&d,&grid)==rejected);
 #ifdef COUNT_PCP_CHECKS
-      assert(pcp_checks==64-(test==4 && prank==0));
+      assert(pcp_checks==64);
 #endif
     assert(memcmp(saved,d.Uc[3][3][3],sizeof(saved))==0);
     TOT_LOOP(k,j,i) NVAR_LOOP(n) assert(d.Vc[n][k][j][i]==123.0+n);

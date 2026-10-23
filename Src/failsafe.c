@@ -131,10 +131,6 @@ void FailSafe (Data *d, timeStep *Dts, Grid *grid)
   err = Integrate (d, Dts, grid);
   if (err == 0) return;  /* Step succeeded */
 
-  // #if PHYSICS == RMHD
-  // FailSafeDumpBadCells(d, grid, "native_failure");
-  // #endif
-
 /* --------------------------------------------------------
    3. Step did not succeed: enable Fail-safe procedure.
       Here 'err' is a globaly reduced variable already, so
@@ -414,13 +410,14 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
       g_rmhd_failsafe_low_order = 0;
       return;
     }
-    // printLog("RMHD_FAILSAFE failed: attempt=%d stage=%d dt=%.17g err=%d\n",
-    //          attempt,g_intStage,g_dt,err);
-    // {
-    //   char phase[48];
-    //   snprintf(phase,sizeof(phase),"failsafe_attempt%02d",attempt);
-    //   FailSafeDumpBadCells(d,grid,phase);
-    // }
+    printLog("RMHD_FAILSAFE failed: attempt=%d stage=%d dt=%.17g err=%d "
+             "new_fallback_region=%s\n",
+             attempt,g_intStage,g_dt,err,progress ? "YES" : "NO");
+    {
+      char phase[48];
+      snprintf(phase,sizeof(phase),"failsafe_attempt%02d",attempt);
+      FailSafeDumpBadCells(d,grid,phase);
+    }
     if (attempt > 0 && !progress) {
       /* Skip the remaining identical-dt passes. The loop increment selects
        * the first attempt at the next halving, or the exhaustion exit.
@@ -432,7 +429,14 @@ void FailSafe(Data *d, timeStep *Dts, Grid *grid)
 
   /* All ranks dump before any rank aborts, even if the failure has no C2P
    * flag (for example a rejected PCP stage or unusable ghost primitive). */
-  //FailSafeDumpBadCells(d,grid,"failsafe_final");
+  FailSafeDumpBadCells(d,grid,"failsafe_final");
+#ifdef PARALLEL
+  /* Integrate() has already globally reduced the fatal error, so every rank
+   * reaches this point.  Wait until rank-local snapshots have been closed
+   * before any rank enters MPI_Abort; otherwise a fast rank can abort while
+   * another rank is still creating or flushing its dump. */
+  MPI_Barrier(MPI_COMM_WORLD);
+#endif
   if (FlagCheck(d->flag,FLAG_CONS2PRIM_FAIL)) FlagShow(d,FLAG_CONS2PRIM_FAIL);
   printLog("! RMHD_FAILSAFE exhausted: step=%ld stage=%d original_dt=%.4g "
            "last_dt=%.4g max_halvings=%d\n",

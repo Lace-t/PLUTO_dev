@@ -155,15 +155,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #endif
 
 /* CheckData (d, grid, "Before Predictor"); */
-  /* Each RK candidate is tested after combination/CT and before acceptance.
-   * On rejection, restore this stage and replace only faces adjacent to
-   * flagged cells with first-order LLF fluxes (FOFC), then test again.
-   * FinishStage handles exhausted retries through ordinary C2P/PressureFix,
-   * including the fatal exit if recovery fails with FAILSAFE disabled. */
-  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
-  RMHD_PCP_BeginStage(d,Dts);
-  do {
-  #endif
+#if (PHYSICS == RMHD) && (PCP_FOFC == YES)
+  err = RMHD_PCP_RunStage(d,Dts,g_dt,NULL,NULL,0,w0,wc,&box,grid);
+  if (err) return err;
+#else
+
   UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
 
   /* -- Update irradiation flux (RHD/RMHD) -- */
@@ -177,35 +173,23 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   RingAverageCons(d, grid);
   #endif
 
-#if RADIATION && (!RADIATION_NR)
-  #if RADIATION_IMEX_SSP2
-  AddRadSource1(d->Uc, Srad1, &box, dt_rk2);
-  ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
-  RadStep3D (d->Uc, d->Vc, Srad2, d->flag, &box, dt_rk1);
-  #else
-  ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
-  RadStep3D (d->Uc, d->Vc, NULL, d->flag, &box, g_dt);
+  #if RADIATION && (!RADIATION_NR)
+    #if RADIATION_IMEX_SSP2
+    AddRadSource1(d->Uc, Srad1, &box, dt_rk2);
+    ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
+    RadStep3D (d->Uc, d->Vc, Srad2, d->flag, &box, dt_rk1);
+    #else
+    ConsToPrim3D (d->Uc, d->Vc, d->flag, &box, grid);
+    RadStep3D (d->Uc, d->Vc, NULL, d->flag, &box, g_dt);
+    #endif
   #endif
-#endif
 
-#ifdef STAGGERED_MHD
+  #ifdef STAGGERED_MHD
   CT_AverageStaggeredFields (d, 1, &box, grid);
-#endif
-
-#if (PHYSICS == RMHD) && (PCP_FOFC == YES)
-  err = RMHD_PCP_CheckStage(d,grid);
-  /* Consistent CT has already recovered and validated V, then rebuilt U
-   * with CT B. No intervening update is allowed on the PCP_FOFC path. */
-  #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
-  if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
   #endif
-  if (err) err=RMHD_PCP_TryPressureFix(d,err,&box,grid);
-  } while (err && RMHD_PCP_RetryStage(d,Dts));
-  err = RMHD_PCP_FinishStage(d,err,&box,grid);
-  if (err) return err;
-#else
 
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
+    UserDefCFloors(d,grid);
     if (RMHD_PCP_CheckStage(d, grid)) {
       err=RMHD_PCP_TryPressureFix(d,1,&box,grid);
       err=RMHD_PCP_FinishStage(d,err,&box,grid);
@@ -217,7 +201,8 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if FAILSAFE == YES
     if (err > 0) return err;
   #endif
-#endif
+
+#endif /* RMHD PCP_FOFC */
 
 /* -- 1e. Advance particles (w/ feedback) by a full step -- */
 
@@ -247,12 +232,12 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 /* -- 2b. Advance paticles & solution array -- */
 
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
+  err = RMHD_PCP_RunStage(d,Dts,g_dt,U0,Bs0,1,w0,wc,&box,grid);
+  if (err) return err;
+  #else
   #if PARTICLES == PARTICLES_LP
   Particles_LP_Update (d, Dts, g_dt, grid);
-  #endif
-  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
-  RMHD_PCP_BeginStage(d,Dts);
-  do {
   #endif
   UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
 
@@ -297,22 +282,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 /* -- 2f. Convert to Primitive -- */
 
-  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
-  err = RMHD_PCP_CheckStage(d,grid);
-  /* Consistent CT has already recovered and validated V, then rebuilt U
-   * with CT B. No intervening update is allowed on the PCP_FOFC path. */
-  #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
-  if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
-  #endif
-  if (err) err=RMHD_PCP_TryPressureFix(d,err,&box,grid);
-  } while (err && RMHD_PCP_RetryStage(d,Dts));
-  err = RMHD_PCP_FinishStage(d,err,&box,grid);
-  if (err) return err;
-  #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
+  UserDefCFloors(d,grid);
   if (RMHD_PCP_CheckStage(d, grid)) {
     err=RMHD_PCP_TryPressureFix(d,1,&box,grid);
-      err=RMHD_PCP_FinishStage(d,err,&box,grid);
+    err=RMHD_PCP_FinishStage(d,err,&box,grid);
     if (err) return err;
   } else
   #endif
@@ -320,7 +294,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if FAILSAFE == YES
   if (err > 0) return err;
   #endif
-  #endif
+#endif /* RMHD PCP_FOFC */
 
 #endif  /* TIME_STEPPING == RK2/RK3 */
 
@@ -342,12 +316,12 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
 
 /* -- 3b. Update solution array -- */
 
+  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
+  err = RMHD_PCP_RunStage(d,Dts,g_dt,U0,Bs0,2,w0,wc,&box,grid);
+  if (err) return err;
+  #else
   #if PARTICLES == PARTICLES_LP
   Particles_LP_Update (d, Dts, g_dt, grid);
-  #endif
-  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
-  RMHD_PCP_BeginStage(d,Dts);
-  do {
   #endif
   UpdateStage(d, d->Uc, d->Vs, NULL, g_dt, Dts, grid);
 
@@ -385,22 +359,11 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   FARGO_ShiftParticles (d, grid, g_dt);
   #endif
   #endif
-  #if (PHYSICS == RMHD) && (PCP_FOFC == YES)
-  err = RMHD_PCP_CheckStage(d,grid);
-  /* Consistent CT has already recovered and validated V, then rebuilt U
-   * with CT B. No intervening update is allowed on the PCP_FOFC path. */
-  #if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
-  if (!err) err = RMHD_PCP_ConsToPrim3D_CheckModified(d->Uc,d->Vc,d->flag,&box,grid);
-  #endif
-  if (err) err=RMHD_PCP_TryPressureFix(d,err,&box,grid);
-  } while (err && RMHD_PCP_RetryStage(d,Dts));
-  err = RMHD_PCP_FinishStage(d,err,&box,grid);
-  if (err) return err;
-  #else
   #if (PHYSICS == RMHD) && (FAILSAFE == YES) && (RMHD_FAILSAFE_PCP_CHECK == YES)
+  UserDefCFloors(d,grid);
   if (RMHD_PCP_CheckStage(d, grid)) {
     err=RMHD_PCP_TryPressureFix(d,1,&box,grid);
-      err=RMHD_PCP_FinishStage(d,err,&box,grid);
+    err=RMHD_PCP_FinishStage(d,err,&box,grid);
     if (err) return err;
   } else
   #endif
@@ -408,7 +371,7 @@ int AdvanceStep (Data *d, timeStep *Dts, Grid *grid)
   #if FAILSAFE == YES
   if (err > 0) return err;
   #endif
-  #endif
+#endif /* RMHD PCP_FOFC */
 #endif /* TIME_STEPPING == RK3 */
 
 /* --------------------------------------------------------
