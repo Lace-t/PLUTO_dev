@@ -21,10 +21,8 @@ static int stage_pass;
 #if PCP_FOFC == YES
 static Data_Arr stage_u;
 static int PCPStageCellAffected(int k, int j, int i);
+static unsigned char ***stage_affected;
 static Data_Arr stage_candidate_u;
-#ifdef STAGGERED_MHD
-static Data_Arr stage_candidate_b;
-#endif
 #endif
 
 /* Construct the fluid states used by a failsafe retry after States() has
@@ -67,6 +65,10 @@ void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
            ((s->flag[face] | s->flag[face+1]) & (FLAG_FLAT | FLAG_LF))) face++;
     RMHD_FailSafe_StageStates(s,first,face-1);
     LF_Solver(s,first,face-1,cmax,grid);
+#if NSCL > 0
+    /* Cached high-order scalar fluxes remain valid on every other face. */
+    AdvectFlux(s,first,face-1,grid);
+#endif
   }
 }
 
@@ -80,34 +82,40 @@ int RMHD_PCP_CheckStage(Data *d, Grid *grid)
   (void)grid;
 #if PCP_FOFC == YES
   if (stage_u != NULL && stage_pass == 0) {
-    DOM_LOOP(k,j,i) {
-      memcpy(stage_candidate_u[k][j][i],d->Uc[k][j][i],NVAR*sizeof(double));
-#ifdef STAGGERED_MHD
-      DIM_LOOP(n) stage_candidate_b[n][k][j][i]=d->Vs[n][k][j][i];
-#endif
-    }
-  } else if (stage_u != NULL) {
-#ifndef STAGGERED_MHD
-    DOM_LOOP(k,j,i) if (!PCPStageCellAffected(k,j,i))
-      memcpy(d->Uc[k][j][i],stage_candidate_u[k][j][i],NVAR*sizeof(double));
-#endif
+    for (k=KBEG;k<=KEND;k++) for (j=JBEG;j<=JEND;j++)
+      memcpy(stage_candidate_u[k][j][IBEG],d->Uc[k][j][IBEG],
+             (IEND-IBEG+1)*NVAR*sizeof(double));
   }
 #endif
   DOM_LOOP(k,j,i) {
 #if PCP_FOFC == YES
     /* Once FOFC changes local fluxes, only this stencil can have a new
      * conservative candidate. The first candidate still needs a full scan. */
-    if (stage_u != NULL && stage_pass > 0 && !PCPStageCellAffected(k,j,i)) {
+    if (stage_u != NULL && stage_pass > 0 && !stage_affected[k][j][i]) {
 #ifndef STAGGERED_MHD
+      d->flag[k][j][i] &= ~(FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL);
       continue;
 #else
       /* CT retries rebuild the full stage without a cached edge/flux update. */
 #endif
     }
+    /* Failure bits describe this candidate, not a rejected earlier pass.
+     * Keep FLAG_LF until EndStage so later retries retain corrected fluxes. */
+#if !defined(STAGGERED_MHD) || CT_RMHD_CONSISTENT != YES
+    if (stage_u != NULL)
+      d->flag[k][j][i] &= ~(FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL |
+                          FLAG_NEGATIVE_DENSITY | FLAG_NEGATIVE_ENERGY);
+#endif
 #endif
     double *u = d->Uc[k][j][i];
     /* RMHD_PCP_Check is the sole conservative PCP criterion. */
     int cell_bad = !RMHD_PCP_Check(u);
+#if defined(STAGGERED_MHD) && CT_RMHD_CONSISTENT == YES
+    /* CT already performed C2P. Its current failure must survive even
+     * when the conservative criterion alone accepts the candidate. */
+    if (d->flag[k][j][i] & (FLAG_CONS2PRIM_FAIL | FLAG_PRESSURE_FIX_FAIL))
+      cell_bad = 1;
+#endif
 #ifdef STAGGERED_MHD
     /* Both faces bounding the active cell must be finite. */
     DIM_EXPAND(
@@ -165,6 +173,8 @@ static uint16_t ***stage_flags, ***stage_mask;
 static double *stage_cmax;
 static timeStep stage_dts;
 static int outer_mode;
+static int sparse_allowed;
+static int **stage_row_lo[DIMENSIONS], **stage_row_hi[DIMENSIONS];
 static Data_Arr stage_flux[DIMENSIONS];
 static double ***stage_press[DIMENSIONS];
 static double ***stage_speed[DIMENSIONS];
@@ -185,6 +195,59 @@ int RMHD_PCP_UseFluxCache(void)
   return 0;
 #else
   return stage_pass > 0;
+#endif
+}
+
+/* Bounds cover the full affected cell set in every direction. Thus each
+ * recomputed cell receives all directional flux AND source contributions,
+ * in the original order, starting from the original stage-entry U. */
+int RMHD_PCP_ReplayRange(int dir, int k, int j, int i, int *beg, int *end)
+{
+#if PCP_STAGE_SPARSE_REPLAY == YES && !defined(STAGGERED_MHD) \
+ && DIVB_CONTROL == DIV_CLEANING
+  int a = dir == KDIR ? j : k;
+  int b = dir == IDIR ? j : i;
+  if (!sparse_allowed || stage_pass == 0) return 0;
+  *beg = stage_row_lo[dir][a][b];
+  *end = stage_row_hi[dir][a][b];
+  return 1;
+#else
+  (void)dir; (void)k; (void)j; (void)i; (void)beg; (void)end;
+  return 0;
+#endif
+}
+
+double RMHD_PCP_ReplaySpeed(int dir, int k, int j, int i)
+{
+  return stage_speed[dir][k][j][i];
+}
+
+static void PCPStageBuildRows(void)
+{
+#if PCP_STAGE_SPARSE_REPLAY == YES && !defined(STAGGERED_MHD) \
+ && DIVB_CONTROL == DIV_CLEANING
+  int dir,a,b,i,j,k;
+  for (dir=0; dir<DIMENSIONS; dir++) {
+    int na=dir == KDIR ? NX2_TOT : NX3_TOT;
+    int nb=dir == IDIR ? NX2_TOT : NX1_TOT;
+    if (stage_row_lo[dir] == NULL) {
+      stage_row_lo[dir]=ARRAY_2D(na,nb,int);
+      stage_row_hi[dir]=ARRAY_2D(na,nb,int);
+    }
+    for(a=0;a<na;a++) for(b=0;b<nb;b++) {
+      stage_row_lo[dir][a][b]=NMAX_POINT;
+      stage_row_hi[dir][a][b]=-1;
+    }
+  }
+  DOM_LOOP(k,j,i) if (stage_affected[k][j][i]) {
+    for(dir=0;dir<DIMENSIONS;dir++) {
+      int q=dir == IDIR ? i : dir == JDIR ? j : k;
+      a=dir == KDIR ? j : k;
+      b=dir == IDIR ? j : i;
+      stage_row_lo[dir][a][b]=MIN(stage_row_lo[dir][a][b],q);
+      stage_row_hi[dir][a][b]=MAX(stage_row_hi[dir][a][b],q);
+    }
+  }
 #endif
 }
 
@@ -259,12 +322,10 @@ void RMHD_PCP_BeginStage(Data *d, timeStep *Dts)
   if (stage_u == NULL) {
     stage_u = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
     stage_candidate_u = ARRAY_4D(NX3_TOT,NX2_TOT,NX1_TOT,NVAR,double);
-#ifdef STAGGERED_MHD
-    stage_candidate_b = ARRAY_4D(DIMENSIONS,NX3_TOT,NX2_TOT,NX1_TOT,double);
-#endif
     stage_v = ARRAY_4D(NVAR,NX3_TOT,NX2_TOT,NX1_TOT,double);
     stage_flags = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
     stage_mask = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
+    stage_affected = ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,unsigned char);
     stage_cmax = ARRAY_1D(NMAX_POINT,double);
     for (n=0; n<DIMENSIONS; n++) {
 #ifndef STAGGERED_MHD
@@ -279,10 +340,14 @@ void RMHD_PCP_BeginStage(Data *d, timeStep *Dts)
   }
   stage_pass = 0;
   outer_mode = g_rmhd_failsafe_low_order;
+  sparse_allowed = !outer_mode;
   stage_dts = *Dts;
   memcpy(stage_cmax,Dts->cmax,NMAX_POINT*sizeof(double));
   TOT_LOOP(k,j,i) {
     stage_flags[k][j][i] = d->flag[k][j][i];
+    /* Pre-existing FLAT faces also require LF work outside the new mask.
+     * Retain the full replay for that outer fallback configuration. */
+    if (d->flag[k][j][i] & FLAG_FLAT) sparse_allowed=0;
     stage_mask[k][j][i] = 0;
   }
   for(k=0;k<NX3_TOT;k++) for(j=0;j<NX2_TOT;j++)
@@ -320,10 +385,9 @@ int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
       (stage_pass > 0 && total[2] == 0)) {
     /* The input snapshot, dt and LF operator have not changed. Repeating
      * this candidate without any new global mask cells cannot repair it. */
-    /* Retain all observed seeds for the outer full-step fallback, while
-     * leaving rejected U/V/B intact for its diagnostics. */
-    TOT_LOOP(k,j,i) if (stage_mask[k][j][i]&FLAG_LF)
-      d->flag[k][j][i] |= FLAG_CONS2PRIM_FAIL;
+    /* Leave only current failures flagged. Historical LF seeds that now
+     * pass the criterion must not be sent to PressureFix. Keep U/V/B and
+     * the cumulative LF mask intact for recovery or the outer fallback. */
     WARNING(printLog("PCP_STAGE exhausted: step=%ld stage=%d passes=%d bad=%ld\n",
              g_stepNumber,g_intStage,stage_pass,total[0]);)
     g_rmhd_failsafe_low_order = outer_mode;
@@ -350,6 +414,10 @@ int RMHD_PCP_RetryStage(Data *d, timeStep *Dts)
   TOT_LOOP(k,j,i) stage_mask[k][j][i] |=
     d->flag[k][j][i] & FLAG_LF & ~stage_flags[k][j][i];
 #endif
+  /* The cumulative mask changes only here. Cache its dependency stencil
+   * once instead of rebuilding it in several full-domain retry scans. */
+  DOM_LOOP(k,j,i) stage_affected[k][j][i] = PCPStageCellAffected(k,j,i);
+  if (sparse_allowed) PCPStageBuildRows();
   stage_pass++;
   g_rmhd_failsafe_low_order = 1;
   WARNING(printLog("PCP_STAGE retry: step=%ld stage=%d pass=%d bad=%ld fofc=%ld\n",
@@ -393,23 +461,11 @@ int RMHD_PCP_RunStage(Data *d, timeStep *Dts, double dt,
       CT_AverageStaggeredFields(d,1,box,grid);
 #endif
     }
-    /* The cache contains the first fully combined RK candidate. A retry
-     * replays cached high-order fluxes plus local LF replacements; retain
-     * the bitwise first candidate outside the flux-dependency stencil. */
-    if (stage_pass > 0
 #ifndef STAGGERED_MHD
-        ) DOM_LOOP(k,j,i)
-#else
-        && RMHD_PCP_UseFluxCache()) DOM_LOOP(k,j,i)
-#endif
-      if (!PCPStageCellAffected(k,j,i))
-        memcpy(d->Uc[k][j][i],stage_candidate_u[k][j][i],NVAR*sizeof(double));
-#ifdef STAGGERED_MHD
-    if (stage_pass > 0 && RMHD_PCP_UseFluxCache()) {
-      /* CT faces are restored with the matching candidate cell stencil. */
-      for (n=0;n<DIMENSIONS;n++) TOT_LOOP(k,j,i)
-        if (!PCPStageCellAffected(k,j,i)) d->Vs[n][k][j][i]=stage_candidate_b[n][k][j][i];
-    }
+    /* Restore cached candidates before the user floor hook, once per pass.
+     * CT always checks its fully rebuilt candidate. */
+    if (stage_pass > 0) DOM_LOOP(k,j,i) if (!stage_affected[k][j][i])
+      memcpy(d->Uc[k][j][i],stage_candidate_u[k][j][i],NVAR*sizeof(double));
 #endif
     UserDefCFloors(d,grid);
     err=RMHD_PCP_CheckStage(d,grid);
@@ -536,8 +592,6 @@ int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
     int pressure_fix_err = 0;
     static Data_Arr rejected_u, rejected_v;
     static uint16_t ***rejected_flags;
-    long changed=0, global_changed;
-    double added=0.0, max_relative=0.0, global_added, global_relative;
 
     /* Do not let ordinary mapper floors invent density or mask NaNs.
      * All ranks make this decision before entering its collectives. */
@@ -550,35 +604,17 @@ int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
       rejected_v=ARRAY_4D(NVAR,NX3_TOT,NX2_TOT,NX1_TOT,double);
       rejected_flags=ARRAY_3D(NX3_TOT,NX2_TOT,NX1_TOT,uint16_t);
     }
-    DOM_LOOP(k,j,i) {
-      NVAR_LOOP(n) {
-        rejected_u[k][j][i][n]=d->Uc[k][j][i][n];
-        rejected_v[n][k][j][i]=d->Vc[n][k][j][i];
-      }
-      rejected_flags[k][j][i]=d->flag[k][j][i];
+    for(k=KBEG;k<=KEND;k++) for(j=JBEG;j<=JEND;j++) {
+      memcpy(rejected_u[k][j][IBEG],d->Uc[k][j][IBEG],
+             (IEND-IBEG+1)*NVAR*sizeof(double));
+      NVAR_LOOP(n) memcpy(rejected_v[n][k][j]+IBEG,d->Vc[n][k][j]+IBEG,
+                          (IEND-IBEG+1)*sizeof(double));
+      memcpy(rejected_flags[k][j]+IBEG,d->flag[k][j]+IBEG,
+             (IEND-IBEG+1)*sizeof(uint16_t));
     }
 
     pressure_fix_err = PCPRecoverAfterFOFC(d);
     pressure_fix_err = PCPRecoveryInvalid(d,1) || pressure_fix_err;
-    if (!pressure_fix_err) DOM_LOOP(k,j,i) {
-      double before=rejected_u[k][j][i][ENG];
-      double delta=d->Uc[k][j][i][ENG]-before;
-      if (delta != 0.0) {
-        changed++;
-        added+=delta*grid->dV[k][j][i];
-        max_relative=fmax(max_relative,fabs(delta)/fmax(fabs(before),1.e-300));
-      }
-    }
-    global_changed=changed; global_added=added; global_relative=max_relative;
-#ifdef PARALLEL
-    MPI_Allreduce(&changed,&global_changed,1,MPI_LONG,MPI_SUM,MPI_COMM_WORLD);
-    MPI_Allreduce(&added,&global_added,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
-    MPI_Allreduce(&max_relative,&global_relative,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
-#endif
-    // printLog("PCP_STAGE recovery: step=%ld stage=%d pressure_fix=%s "
-    //          "energy_changed=%ld dE_volume=%.17g max_relative=%.17g\n",
-    //          g_stepNumber,g_intStage,pressure_fix_err ? "FAILED" : "accepted",
-    //          global_changed,global_added,global_relative);
     if (!pressure_fix_err) {
       return 0;
     }
@@ -602,6 +638,49 @@ int RMHD_PCP_TryPressureFix(Data *d, int err, RBox *box, Grid *grid)
 #endif
 }
 
+/* Detect IEEE-754 binary64 subnormals by bits so classification does not
+ * itself underflow or depend on floating-point exception/FTZ behavior. */
+#if !defined(STAGGERED_MHD)
+static int RMHD_PCP_IsSubnormal(double x)
+{
+  uint64_t bits;
+  memcpy(&bits, &x, sizeof(bits));
+  return (bits & UINT64_C(0x7ff0000000000000)) == 0 &&
+         (bits & UINT64_C(0x000fffffffffffff)) != 0;
+}
+
+/* Repair only an accepted DC/GLM stage. Keep the conserved total energy
+ * unchanged: the removed magnetic energy is negligible in the affected
+ * cells. If either representation has a subnormal B component, synchronize
+ * that component to zero in Uc and Vc. Clear GLM psi in the same cell so its
+ * cleaning wave cannot recreate the repaired weak magnetic tail next stage. */
+static void RMHD_PCP_RepairSubnormalMagnetic(Data *d)
+{
+  int i,j,k,n;
+  DOM_LOOP(k,j,i) {
+#ifdef GLM_MHD
+    int repaired=0;
+#endif
+    for (n=BX1; n<=BX3; n++) {
+      if (RMHD_PCP_IsSubnormal(d->Uc[k][j][i][n]) ||
+          RMHD_PCP_IsSubnormal(d->Vc[n][k][j][i])) {
+        d->Uc[k][j][i][n]=0.0;
+        d->Vc[n][k][j][i]=0.0;
+#ifdef GLM_MHD
+        repaired=1;
+#endif
+      }
+    }
+#ifdef GLM_MHD
+    if (repaired) {
+      d->Uc[k][j][i][PSI_GLM]=0.0;
+      d->Vc[PSI_GLM][k][j][i]=0.0;
+    }
+#endif
+  }
+}
+#endif
+
 /* Complete after FOFC and the optional post-FOFC PressureFix attempt. */
 int RMHD_PCP_FinishStage(Data *d, int err, RBox *box, Grid *grid)
 {
@@ -615,6 +694,9 @@ int RMHD_PCP_FinishStage(Data *d, int err, RBox *box, Grid *grid)
   }
 #if PCP_FOFC == YES
   RMHD_PCP_EndStage(d);
+#ifndef STAGGERED_MHD
+  RMHD_PCP_RepairSubnormalMagnetic(d);
+#endif
 #endif
   return 0;
 }

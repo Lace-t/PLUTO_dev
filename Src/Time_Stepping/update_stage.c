@@ -173,13 +173,32 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
 
     BOX_TRANSVERSE_LOOP(&sweepBox, k,j,i){
 
+      int full_beg=nbeg, full_end=nend;
+      int gather_beg=0, gather_end=ntot-1, sparse_replay=0;
+      ip = sweepBox.n;
+      g_i=i; g_j=j; g_k=k;
+#if (PHYSICS == RMHD) && (PCP_FOFC == YES)
+      if (RMHD_PCP_UseFluxCache()) {
+        sparse_replay=RMHD_PCP_ReplayRange(g_dir,k,j,i,&nbeg,&nend);
+        if (sparse_replay) {
+          /* Even an empty row contributes to the global CFL constraint.
+           * Read only cached speeds outside the numerical replay span. */
+          for (*ip=full_beg-1; *ip<=full_end; (*ip)++)
+            Dts->cmax[*ip]=RMHD_PCP_ReplaySpeed(g_dir,k,j,i);
+          if (nbeg>nend) goto replay_cfl;
+          gather_beg=nbeg-1;
+          gather_end=nend+1;
+        }
+      }
+#endif
+
     /* ----------------------------------------------------
        2a. Copy data to 1D arrays
        ---------------------------------------------------- */
 
       ip  = sweepBox.n;
       g_i = i;  g_j = j;  g_k = k;
-      for ((*ip) = 0; (*ip) < ntot; (*ip)++) {
+      for ((*ip) = gather_beg; (*ip) <= gather_end; (*ip)++) {
         NVAR_LOOP(nv) stateC->v[*ip][nv] = d->Vc[nv][k][j][i];
         sweep.flag[*ip] = d->flag[k][j][i];
         #ifdef STAGGERED_MHD
@@ -220,7 +239,13 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
        2b. Compute L/R states 
        ---------------------------------------------------- */
       
-      CheckNaN (stateC->v, 0, ntot-1, "stateC->v");
+      CheckNaN (stateC->v, gather_beg, gather_end, "stateC->v");
+#if (PHYSICS == RMHD) && (PCP_FOFC == YES)
+      /* Replay already has high-order fluxes. CorrectFluxes constructs
+       * fresh first-order states only on flagged faces. The first pass
+       * still calls States, including its one-time storage allocation. */
+      if (!RMHD_PCP_UseFluxCache())
+#endif
       States  (&sweep, nbeg - 1, nend + 1, grid);
 
       #if (RING_AVERAGE > 1) && (GEOMETRY == POLAR)
@@ -244,6 +269,11 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
         }
       } else {
         d->fluidRiemannSolver (&sweep, nbeg-1, nend, Dts->cmax, grid);
+#if NSCL > 0
+        /* Cache complete high-order fluxes, including passive scalars.
+         * FOFC rebuilds scalar fluxes only on the corrected LLF faces. */
+        AdvectFlux (&sweep, nbeg-1, nend, grid);
+#endif
       }
       if (!RMHD_PCP_UseFluxCache()) {
         for ((*ip) = nbeg-1; (*ip) <= nend; (*ip)++) {
@@ -264,7 +294,7 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
       #endif
 #endif
       
-      #if NSCL > 0
+      #if NSCL > 0 && !((PHYSICS == RMHD) && (PCP_FOFC == YES))
       AdvectFlux (&sweep, nbeg-1, nend, grid);
       #endif
 
@@ -326,6 +356,18 @@ void UpdateStage(Data *d, Data_Arr Uc, Data_Arr Us, double **aflux,
        2f. Compute inverse hyperbolic time step
        ---------------------------------------------------- */
 
+replay_cfl:
+      nbeg=full_beg;
+      nend=full_end;
+#if INTERNAL_BOUNDARY == YES && INTERNAL_BOUNDARY_CFL == NO
+      if (sparse_replay) {
+        /* Match InternalBoundaryReset even on rows/cells whose RHS was
+         * skipped. Apply after LF, which may overwrite interface speeds. */
+        for (*ip=nbeg; *ip<=nend; (*ip)++)
+          if (d->flag[k][j][i] & FLAG_INTERNAL_BOUNDARY)
+            Dts->cmax[*ip]=Dts->cmax[*ip-1]=0.0;
+      }
+#endif
       #if DIMENSIONS > 1
       if (g_intStage == 1){
         double q = 1.0;

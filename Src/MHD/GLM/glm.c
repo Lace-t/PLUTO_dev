@@ -162,42 +162,48 @@ void GLM_Source (const Data *data, double dt, Grid *grid)
  *   
  *********************************************************************** */
 {
-  int    i,j,k;
-  int    dimensions = INCLUDE_IDIR + INCLUDE_JDIR + INCLUDE_KDIR;
-  double cr, cp, scrh;
-  double dx, dy, dz, dtdh, dh;
+  int i, j, k;
+  double scrh;
+
+#ifdef CHOMBO
+  (void)grid;
+  /* CHOMBO supplies dt normalized by the AMR level spacing. */
+  scrh = exp(-dt*glm_ch*GLM_ALPHA);
+  DOM_LOOP(k,j,i) {
+    data->Uc[k][j][i][PSI_GLM] *= scrh;
+    data->Vc[PSI_GLM][k][j][i] = data->Uc[k][j][i][PSI_GLM];
+  }
+#else
+  #if (PHYSICS == MHD) || (PHYSICS == RMHD)
+  /* The shortest active Cartesian cell length sets the damping time.
+   * Local widths remove MPI-decomposition dependence; taking the minimum
+   * makes the prescription invariant under coordinate-axis permutations.
+   * Isotropic cells retain the original GLM_ALPHA normalization.
+   * Apply this scalar source once, not once per directional sweep.
+   */
+  double dh;
+  DOM_LOOP(k,j,i) {
+    dh = grid->dx[IDIR][i];
+    #if INCLUDE_JDIR
+    dh = MIN(dh, grid->dx[JDIR][j]);
+    #endif
+    #if INCLUDE_KDIR
+    dh = MIN(dh, grid->dx[KDIR][k]);
+    #endif
+    scrh = exp(-(dt/dh)*glm_ch*GLM_ALPHA);
+    data->Uc[k][j][i][PSI_GLM] *= scrh;
+    data->Vc[PSI_GLM][k][j][i] *= scrh;
+  }
+  #elif PHYSICS == ResRMHD
+  /* Preserve the resistive module's local harmonic-mean prescription. */
+  int dimensions = INCLUDE_IDIR + INCLUDE_JDIR + INCLUDE_KDIR;
   double *dx1 = grid->dx[IDIR];
   double *dx2 = grid->dx[JDIR];
   double *dx3 = grid->dx[KDIR];
-  
-#ifdef CHOMBO
-  dtdh = dt;
-#else
-  dx   = grid->dx[IDIR][IBEG];
-  dtdh = dt/dx;
-#endif
-
-  cp   = sqrt(dx*glm_ch/GLM_ALPHA);
-  scrh = dtdh*glm_ch*GLM_ALPHA; 
-
-  scrh = exp(-scrh);
-#ifdef CHOMBO
+  double dh;
   DOM_LOOP(k,j,i) {
-    data->Uc[k][j][i][PSI_GLM] *= scrh;
-    data->Vc[PSI_GLM][k][j][i]  = data->Uc[k][j][i][PSI_GLM];
-  }
-#else
-  DOM_LOOP(k,j,i) {
-    #if (PHYSICS == MHD) || (PHYSICS == RMHD)
-    data->Uc[k][j][i][PSI_GLM] *= scrh;
-    data->Vc[PSI_GLM][k][j][i] *= scrh;
-    #elif PHYSICS == ResRMHD
-
-   /* -- Compute dh as the harmonic mean of dx's in different directions -- */
-   
     scrh = DIM_EXPAND(1.0/dx1[i], + 1.0/dx2[j], + 1.0/dx3[k]);
-    dh   = dimensions/scrh;
-
+    dh = dimensions/scrh;
     scrh = exp(-dt/dh);
     data->Vc[PSI_GLM][k][j][i] *= scrh;
     data->Uc[k][j][i][PSI_GLM] *= scrh;
@@ -205,8 +211,8 @@ void GLM_Source (const Data *data, double dt, Grid *grid)
     data->Vc[PHI_GLM][k][j][i] *= scrh;
     data->Uc[k][j][i][PHI_GLM] *= scrh;
     #endif
-    #endif /* PHYSICS == ResRMHD */
-  }  
+  }
+  #endif
 #endif
   return;
 }

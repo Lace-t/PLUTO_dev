@@ -36,6 +36,15 @@ int main(void)
   d.flag[3][3][3]=FLAG_CONS2PRIM_FAIL;
   assert(RMHD_PCP_RetryStage(&d,&ts));
   assert(RMHD_PCP_UseFluxCache());
+  /* A single central seed changes the seven-cell face-neighbor stencil.
+   * Each direction must replay every affected cell, not only the seed's
+   * own line, since those cells also need the unchanged source/flux terms. */
+  int lo,hi;
+  assert(RMHD_PCP_ReplayRange(IDIR,3,3,0,&lo,&hi) && lo==2 && hi==4);
+  assert(RMHD_PCP_ReplayRange(JDIR,3,0,3,&lo,&hi) && lo==2 && hi==4);
+  assert(RMHD_PCP_ReplayRange(KDIR,0,3,3,&lo,&hi) && lo==2 && hi==4);
+  assert(RMHD_PCP_ReplayRange(IDIR,3,2,0,&lo,&hi) && lo==3 && hi==3);
+  assert(RMHD_PCP_ReplayRange(IDIR,5,5,0,&lo,&hi) && lo>hi);
   for(q=0;q<8;q++) assert(isnan(ts.cmax[q]));
   DIM_LOOP(dir) for(q=1;q<=5;q++) {
     ts.cmax[q]=NAN;
@@ -43,6 +52,7 @@ int main(void)
     NVAR_LOOP(n) s.flux[q][n]=NAN;
     RMHD_PCP_LoadSweepFlux(dir,3,3,q,&s,ts.cmax,q);
     assert(ts.cmax[q]==0.2+0.1*dir+0.01*q);
+    assert(RMHD_PCP_ReplaySpeed(dir,3,3,q)==ts.cmax[q]);
     assert(s.press[q]==dir+0.1*q);
     NVAR_LOOP(n) assert(s.flux[q][n]==100*dir+10*q+n);
   }

@@ -209,8 +209,10 @@ enum KWAVES {
 #endif
 
 
+/* Maximum FOFC retries before selective primitive recovery. Reducing this
+ * changes the PressureFix set and can change the numerical trajectory. */
 #ifndef PCP_STAGE_LOCAL_PASSES
-#define PCP_STAGE_LOCAL_PASSES 4
+#define PCP_STAGE_LOCAL_PASSES 2
 #endif
 #if PCP_STAGE_LOCAL_PASSES < 1 || PCP_STAGE_LOCAL_PASSES > 16
 #error "PCP_STAGE_LOCAL_PASSES must be in [1,16]"
@@ -300,6 +302,11 @@ void RMHD_LocalFallbackFlag(Data *, uint16_t ***);
 void RMHD_PCP_BeginStage(Data *, timeStep *);
 int RMHD_PCP_RetryStage(Data *, timeStep *);
 int RMHD_PCP_UseFluxCache(void);
+#ifndef PCP_STAGE_SPARSE_REPLAY
+#define PCP_STAGE_SPARSE_REPLAY YES
+#endif
+int RMHD_PCP_ReplayRange(int, int, int, int, int *, int *);
+double RMHD_PCP_ReplaySpeed(int, int, int, int);
 void RMHD_PCP_CacheSweepFlux(int, int, int, int, const Sweep *, const double *, int);
 void RMHD_PCP_LoadSweepFlux(int, int, int, int, Sweep *, double *, int);
 int RMHD_PCP_RunStage(Data *, timeStep *, double, Data_Arr, double ****,
