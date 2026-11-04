@@ -148,8 +148,13 @@ int main (int argc, char *argv[])
     #endif
   }else if (cmd_line.h5restart == YES){
     RestartFromFile (&data, &runtime, cmd_line.nrestart, DBL_H5_OUTPUT, grd);
-  }else if (cmd_line.write){
-    CheckForOutput   (&data, &runtime, tbeg, grd);
+  }
+  /* Restart restores a pre-analysis checkpoint. Run scheduled analysis
+   * before FailSafe snapshots and the first split source/integration. */
+  if (cmd_line.write){
+    if (cmd_line.restart == NO && cmd_line.h5restart == NO){
+      CheckForOutput (&data, &runtime, tbeg, grd);
+    }
     CheckForAnalysis (&data, &runtime, grd);
   }
 

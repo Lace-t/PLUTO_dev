@@ -175,34 +175,39 @@ void GLM_Source (const Data *data, double dt, Grid *grid)
   }
 #else
   #if (PHYSICS == MHD) || (PHYSICS == RMHD)
-  /* The shortest active Cartesian cell length sets the damping time.
-   * Local widths remove MPI-decomposition dependence; taking the minimum
-   * makes the prescription invariant under coordinate-axis permutations.
-   * Isotropic cells retain the original GLM_ALPHA normalization.
+  /* The shortest active physical cell length sets the damping time.
+   * Length_n includes the geometry metric and uses local grid indices.
+   * Compile-time direction guards exclude absent dimensions (including
+   * their dummy widths), independently of the number of vector components.
+   * Cartesian cells retain the previous GLM_ALPHA normalization.
    * Apply this scalar source once, not once per directional sweep.
    */
   double dh;
   DOM_LOOP(k,j,i) {
-    dh = grid->dx[IDIR][i];
+    dh = Length_1(i, j, k, grid);
     #if INCLUDE_JDIR
-    dh = MIN(dh, grid->dx[JDIR][j]);
+    dh = MIN(dh, Length_2(i, j, k, grid));
     #endif
     #if INCLUDE_KDIR
-    dh = MIN(dh, grid->dx[KDIR][k]);
+    dh = MIN(dh, Length_3(i, j, k, grid));
     #endif
     scrh = exp(-(dt/dh)*glm_ch*GLM_ALPHA);
     data->Uc[k][j][i][PSI_GLM] *= scrh;
     data->Vc[PSI_GLM][k][j][i] *= scrh;
   }
   #elif PHYSICS == ResRMHD
-  /* Preserve the resistive module's local harmonic-mean prescription. */
+  /* Preserve the resistive module's local harmonic-mean prescription,
+   * using physical lengths in the active directions only. */
   int dimensions = INCLUDE_IDIR + INCLUDE_JDIR + INCLUDE_KDIR;
-  double *dx1 = grid->dx[IDIR];
-  double *dx2 = grid->dx[JDIR];
-  double *dx3 = grid->dx[KDIR];
   double dh;
   DOM_LOOP(k,j,i) {
-    scrh = DIM_EXPAND(1.0/dx1[i], + 1.0/dx2[j], + 1.0/dx3[k]);
+    scrh = 1.0/Length_1(i, j, k, grid);
+    #if INCLUDE_JDIR
+    scrh += 1.0/Length_2(i, j, k, grid);
+    #endif
+    #if INCLUDE_KDIR
+    scrh += 1.0/Length_3(i, j, k, grid);
+    #endif
     dh = dimensions/scrh;
     scrh = exp(-dt/dh);
     data->Vc[PSI_GLM][k][j][i] *= scrh;

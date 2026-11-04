@@ -50,6 +50,53 @@ void RMHD_FailSafe_StageStates(const Sweep *s, int beg, int end)
  * FOFC cell mask; FLAG_FLAT also supports the outer full-step fallback.
  * Rebuild BOTH states after the ordinary solver, which may modify them
  * (e.g. its GLM pre-solver), and refresh LF's CT flux data at the same faces. */
+#if DIVB_CONTROL == EIGHT_WAVES
+void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
+                               double *cmax, Grid *grid)
+{
+  int face, first;
+  int i, n;
+  static double **original_src;
+  static unsigned char *corrected;
+  if (!g_rmhd_failsafe_low_order) return;
+  /* Source terms live in cells, whereas the correction mask lives on
+   * faces. Preserve the selected solver's source on untouched cells. */
+  if (original_src == NULL) {
+    original_src = ARRAY_2D(NMAX_POINT,NVAR,double);
+    corrected = ARRAY_1D(NMAX_POINT,unsigned char);
+  }
+  for (i=beg;i<=end;i++) {
+    corrected[i]=0;
+    NVAR_LOOP(n) original_src[i][n]=s->src[i][n];
+  }
+  for (face = beg; face <= end; ) {
+    if (!((s->flag[face] | s->flag[face+1]) & (FLAG_FLAT | FLAG_LF))) {
+      face++;
+      continue;
+    }
+    first = face++;
+    while (face <= end &&
+           ((s->flag[face] | s->flag[face+1]) & (FLAG_FLAT | FLAG_LF))) face++;
+    for (i=first;i<face;i++) corrected[i]=1;
+    RMHD_FailSafe_StageStates(s,first,face-1);
+    LF_Solver(s,first,face-1,cmax,grid);
+#if NSCL > 0
+    /* Cached high-order scalar fluxes remain valid on every other face. */
+    AdvectFlux(s,first,face-1,grid);
+#endif
+  }
+  /* All row states are fresh (8-wave retries bypass the flux cache).
+   * Recompute after ALL face corrections: a corrected face changes the
+   * divergence in both adjacent cells, including the right endpoint.
+   * Powell is the LF source operator; untouched cells retain the original
+   * Riemann solver's operator (which may be HLL's induction-only source). */
+  POWELL_DIVB_SOURCE(s,beg+1,end,grid);
+  for (i=beg+1;i<=end;i++) {
+    if (!corrected[i-1] && !corrected[i])
+      NVAR_LOOP(n) s->src[i][n]=original_src[i][n];
+  }
+}
+#else
 void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
                                double *cmax, Grid *grid)
 {
@@ -71,6 +118,7 @@ void RMHD_FailSafe_CorrectFluxes(const Sweep *s, int beg, int end,
 #endif
   }
 }
+#endif
 
 /* Check the actual RK average after its RK combination and CT averaging,
  * before the mapper can change U. No primitive recovery or state repair is
@@ -191,7 +239,10 @@ static void PCPStageFluxAddress(int dir, int k, int j, int i,
 
 int RMHD_PCP_UseFluxCache(void)
 {
-#ifdef STAGGERED_MHD
+#if defined(STAGGERED_MHD) || DIVB_CONTROL == EIGHT_WAVES
+  /* Eight-wave sources depend on reconstructed neighbor faces and cannot
+   * be replayed from a cache containing only flux/pressure/signal speed.
+   * Rebuild the complete row before applying local LF corrections. */
   return 0;
 #else
   return stage_pass > 0;
